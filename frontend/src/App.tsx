@@ -14,6 +14,9 @@ import { Home } from "./pages/Home";
 
 import { FlowList } from "./components/FlowList";
 import { FlowView } from "./pages/FlowView";
+import { Fingerprinter } from "./pages/Fingerprinter";
+import { Fingerprints } from "./pages/Fingerprints";
+import { Settings } from "./pages/Settings";
 
 const DiffView = lazy(() => import("./pages/DiffView"));
 const Corrie = lazy(() => import("./components/Corrie"));
@@ -52,7 +55,33 @@ function App() {
               </Suspense>
             }
           />
+          <Route
+            path="fingerprint/:id"
+            element={
+              <Suspense>
+                <Fingerprinter />
+              </Suspense>
+            }
+          />
+          <Route
+            path="fingerprints"
+            element={
+              <Suspense>
+                {" "}
+                <Fingerprints />
+              </Suspense>
+            }
+          />
+          <Route
+            path="settings/"
+            element={
+              <Suspense>
+                <Settings />
+              </Suspense>
+            }
+          />
         </Route>
+
         <Route path="*" element={<PageNotFound />} />
       </Routes>
     </BrowserRouter>

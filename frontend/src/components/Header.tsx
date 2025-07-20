@@ -343,11 +343,7 @@ export function Header() {
           Last 5 ticks
         </button>
       </div>
-      <Link to={`/corrie?${searchParams}`}>
-        <div className="bg-blue-100 dark:bg-blue-900 text-gray-800 dark:text-gray-100 rounded-md border border-blue-300 dark:border-blue-800 px-2 py-1 text-center hover:bg-blue-200 dark:hover:bg-blue-800 cursor-pointer transition-colors">
-          Graph view
-        </div>
-      </Link>
+
       <div className="ml-2">
         <button
           type="button"
@@ -374,6 +370,19 @@ export function Header() {
           <span className="inline-block bg-blue-100 dark:bg-blue-800 text-blue-800 dark:text-blue-100 text-xs font-semibold px-3 py-1 rounded-full border border-blue-300 dark:border-blue-700">
             Tick: {currentTick}
           </span>
+        </div>
+
+        <div className="ml-4">
+          <Link to="/settings">
+            <button
+              type="button"
+              className="bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100 rounded-md border border-gray-300 dark:border-gray-700 px-2 py-1 text-center cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors flex items-center"
+            >
+              <span role="img" aria-label="Settings">
+                ⚙️
+              </span>
+            </button>
+          </Link>
         </div>
       </div>
     </>

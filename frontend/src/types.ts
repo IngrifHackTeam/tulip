@@ -14,7 +14,7 @@ export interface Flow {
   flagids: string[];
   suricata: number[];
   filename: string;
-  fingerprints: string[];
+  fingerprints: number[];
 }
 
 export interface TickInfo {
@@ -56,7 +56,7 @@ export type FlowsQuery = {
   flagids?: string[];
   limit?: number;
   offset?: number;
-  fingerprints?: string[];
+  fingerprints?: number[];
 };
 
 export type Service = {

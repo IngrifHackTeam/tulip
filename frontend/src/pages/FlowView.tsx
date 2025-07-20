@@ -28,6 +28,7 @@ import {
 } from "../api";
 import escapeStringRegexp from "escape-string-regexp";
 import { NavLink } from "react-router";
+import { Link } from "react-router";
 
 const SECONDARY_NAVBAR_HEIGHT = 50;
 
@@ -497,9 +498,13 @@ function FlowOverview({ flow }: { flow: FullFlow }) {
             {(flow.fingerprints ?? []).map((fp, i) => (
               <span key={fp}>
                 {i > 0 ? ", " : ""}
-                <span className="font-mono bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">
+                <Link
+                  className="font-mono bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-xs"
+                  to={`/fingerprint/${fp}`}
+                  title={`Filter by fingerprint ${fp}`}
+                >
                   {fp}
-                </span>
+                </Link>
               </span>
             ))}
             ]
@@ -660,23 +665,30 @@ export function FlowView() {
       </div>
 
       <div key={flow._id}>
-        {flow ? <FlowOverview flow={flow}></FlowOverview> : undefined}
+        {flow && <FlowOverview flow={flow}></FlowOverview>}
 
-        {(flow?.fingerprints?.length ?? 0) > 0 ? (
+        {(flow?.fingerprints?.length ?? 0) > 0 && (
           <FlowFingerprintTimeline
             id={flow._id}
             fingerprints={flow.fingerprints}
           ></FlowFingerprintTimeline>
-        ) : undefined}
+        )}
 
         {flow?.flow.map((flow_data, i, a) => {
           const delta_time = a[i].time - (a[i - 1]?.time ?? a[i].time);
+          // Use a more stable key than index: use flow_data.time + flow_data.from + i as fallback
+          const key =
+            flow_data &&
+            typeof flow_data.time !== "undefined" &&
+            typeof flow_data.from !== "undefined"
+              ? `${flow_data.time}-${flow_data.from}`
+              : `${flow._id}-${i}`;
           return (
             <Flow
               flow={flow_data}
               delta_time={delta_time}
               fullFlow={flow}
-              key={i}
+              key={key}
               id={flow._id + "-" + i}
             />
           );
@@ -691,7 +703,7 @@ function FlowFingerprintTimeline({
   fingerprints,
 }: {
   id: string;
-  fingerprints: string[];
+  fingerprints: number[];
 }) {
   const {
     data: relatedFlows,
@@ -722,14 +734,26 @@ function FlowFingerprintTimeline({
                     ? format(new Date(relatedFlow.time), "yyyy-MM-dd HH:mm:ss")
                     : ""}
                 </span>
-                <NavLink
-                  to={`/flow/${relatedFlow._id}`}
-                  className="font-mono text-xs text-blue-700 dark:text-blue-400 underline hover:bg-blue-100 dark:hover:bg-blue-900 px-1 py-0.5 rounded transition-colors cursor-pointer"
-                  title={relatedFlow._id}
-                >
-                  {relatedFlow._id}
-                </NavLink>
-                {id === relatedFlow._id ? "(this flow)" : ""}
+
+                {id === relatedFlow._id ? (
+                  `${relatedFlow._id} (this flow)`
+                ) : (
+                  <>
+                    <NavLink
+                      to={`/flow/${relatedFlow._id}`}
+                      className="font-mono text-xs text-blue-700 dark:text-blue-400 underline hover:bg-blue-100 dark:hover:bg-blue-900 px-1 py-0.5 rounded transition-colors cursor-pointer"
+                      title={relatedFlow._id}
+                    >
+                      {relatedFlow._id}
+                    </NavLink>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      Matched fingerprints:
+                      {relatedFlow.fingerprints?.filter((fp) =>
+                        fingerprints.includes(fp),
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
             </li>
           ))}
