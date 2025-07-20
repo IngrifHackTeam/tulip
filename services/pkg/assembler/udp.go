@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // UdpAssembler is responsible for assembling UDP streams from packets.
@@ -101,8 +100,6 @@ func (a *UdpAssembler) CompleteReassembly(stream *UdpStream) *db.FlowEntry {
 		Time:         startTime,
 		Duration:     duration,
 		Num_packets:  int(stream.PacketCount),
-		ParentId:     primitive.NilObjectID,
-		ChildId:      primitive.NilObjectID,
 		Blocked:      false,
 		Tags:         []string{"udp"},
 		Suricata:     []string{},

@@ -20,7 +20,6 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var (
@@ -208,8 +207,6 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 		Time:        time,
 		Duration:    duration,
 		Num_packets: t.numPackets,
-		ParentId:    primitive.NilObjectID,
-		ChildId:     primitive.NilObjectID,
 		Blocked:     false,
 		Tags:        []string{"tcp"},
 		Suricata:    []string{},

@@ -72,18 +72,19 @@ func (api *Router) query(c echo.Context) error {
 	// TODO: this is horrible, the API layer should not be aware of the database structure
 
 	type flowQueryRequest struct {
-		IncludeTags []string `json:"includeTags"`
-		ExcludeTags []string `json:"excludeTags"`
-		FlowData    string   `json:"flow.data"`
-		DstIp       string   `json:"dst_ip"`
-		DstPort     int      `json:"dst_port"`
-		FromTime    int64    `json:"from_time"`
-		ToTime      int64    `json:"to_time"`
-		FlagIds     []string `json:"flagids"`
-		Flags       []string `json:"flags"`
-		Service     string   `json:"service"`
-		Limit       int      `json:"limit"`
-		Offset      int      `json:"offset"`
+		IncludeTags  []string `json:"includeTags"`
+		ExcludeTags  []string `json:"excludeTags"`
+		FlowData     string   `json:"flow.data"`
+		DstIp        string   `json:"dst_ip"`
+		DstPort      int      `json:"dst_port"`
+		FromTime     int64    `json:"from_time"`
+		ToTime       int64    `json:"to_time"`
+		FlagIds      []string `json:"flagids"`
+		Flags        []string `json:"flags"`
+		Service      string   `json:"service"`
+		Limit        int      `json:"limit"`
+		Offset       int      `json:"offset"`
+		Fingerprints []int    `json:"fingerprints"` // Fingerprints to filter by
 	}
 
 	var req flowQueryRequest
@@ -166,9 +167,7 @@ func (api *Router) query(c echo.Context) error {
 		Duration     int                `json:"duration"`    // Duration in milliseconds
 		Num_packets  int                `json:"num_packets"` // Number of packets
 		Blocked      bool               `json:"blocked"`
-		Filename     string             `json:"filename"`  // Name of the pcap file this flow was captured in
-		ParentId     primitive.ObjectID `json:"parent_id"` // Parent flow ID if this is a child flow
-		ChildId      primitive.ObjectID `json:"child_id"`  // Child flow ID if this is a parent flow
+		Filename     string             `json:"filename"` // Name of the pcap file this flow was captured in
 		Fingerprints []uint32           `json:"fingerprints"`
 		Signatures   []db.Signature     `json:"signatures"` // Signatures matched by this flow
 		Flow         []db.FlowItem      `json:"flow"`
@@ -180,8 +179,9 @@ func (api *Router) query(c echo.Context) error {
 
 	// Convert bson.D filter to GetFlowsOptions
 	opts := &db.GetFlowsOptions{
-		Limit:  req.Limit,
-		Offset: req.Offset,
+		Limit:        req.Limit,
+		Offset:       req.Offset,
+		Fingerprints: req.Fingerprints,
 	}
 
 	// Set default limit if not specified
@@ -239,6 +239,11 @@ func (api *Router) query(c echo.Context) error {
 		}
 	}
 
+	slog.Info("Querying flows",
+		slog.Any("filter", filter),
+		slog.Any("options", opts),
+	)
+
 	results, err := api.DB.GetFlows(c.Request().Context(), opts)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -257,8 +262,6 @@ func (api *Router) query(c echo.Context) error {
 			Num_packets:  flow.Num_packets,
 			Blocked:      flow.Blocked,
 			Filename:     flow.Filename,
-			ParentId:     flow.ParentId,
-			ChildId:      flow.ChildId,
 			Fingerprints: flow.Fingerprints,
 			Flow:         flow.Flow,
 			Tags:         flow.Tags,

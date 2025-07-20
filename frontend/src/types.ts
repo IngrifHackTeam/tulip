@@ -9,13 +9,12 @@ export interface Flow {
   // TODO: Get this from backend instead of hacky workaround
   service_tag: string;
   num_packets: number;
-  parent_id: Id;
-  child_id: Id;
   tags: string[];
   flags: string[];
   flagids: string[];
   suricata: number[];
   filename: string;
+  fingerprints: string[];
 }
 
 export interface TickInfo {
@@ -44,20 +43,20 @@ export interface Signature {
 }
 
 export type FlowsQuery = {
-  // Text filter
-  "flow.data"?: string;
-  service: string;
+  "flow.data"?: string; // Text filter
+  service?: string;
   dst_ip?: string; // TODO: remove this, use service
   dst_port?: number; // TODO: remove this, use service
   from_time?: number;
   to_time?: number;
-  includeTags: string[];
-  excludeTags: string[];
-  tags: string[];
-  flags: string[];
-  flagids: string[];
+  includeTags?: string[];
+  excludeTags?: string[];
+  tags?: string[];
+  flags?: string[];
+  flagids?: string[];
   limit?: number;
   offset?: number;
+  fingerprints?: string[];
 };
 
 export type Service = {

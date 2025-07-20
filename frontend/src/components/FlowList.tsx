@@ -149,21 +149,21 @@ export function FlowList() {
 
   // Load more flows function
   const [getFlowsTrigger] = useLazyGetFlowsQuery();
-  
+
   const loadMoreFlows = async () => {
     if (isLoadingMore || !hasMore) return;
-    
+
     setIsLoadingMore(true);
     try {
       const result = await getFlowsTrigger({
         ...baseQuery,
         offset: allFlows.length,
       }).unwrap();
-      
+
       if (result.length < PAGE_SIZE) {
         setHasMore(false);
       }
-      
+
       // Transform new flows with service tags
       const transformedNewFlows = result.map((flow) => ({
         ...flow,
@@ -171,12 +171,12 @@ export function FlowList() {
           services?.find((s) => s.ip === flow.dst_ip && s.port === flow.dst_port)
             ?.name ?? "unknown",
       }));
-      
+
       // Merge with existing flows, avoiding duplicates
-      const newFlows = transformedNewFlows.filter(newFlow => 
+      const newFlows = transformedNewFlows.filter(newFlow =>
         !allFlows.some(existingFlow => existingFlow._id === newFlow._id)
       );
-      
+
       setAllFlows(prev => [...prev, ...newFlows]);
     } catch (error) {
       console.error('Failed to load more flows:', error);
@@ -319,7 +319,7 @@ export function FlowList() {
         ...baseQuery,
         offset: 0, // Always start from the beginning for refresh
       }).unwrap();
-      
+
       // Transform the data
       const transformed = result.map((flow) => ({
         ...flow,
@@ -327,18 +327,18 @@ export function FlowList() {
           services?.find((s) => s.ip === flow.dst_ip && s.port === flow.dst_port)
             ?.name ?? "unknown",
       }));
-      
+
       // Replace all flows with fresh data
       setAllFlows(transformed);
       setHasMore(result.length === PAGE_SIZE);
-      
+
       // Reset flow selection to first item and scroll to top
       setFlowIndex(0);
       virtuoso?.current?.scrollToIndex({
         index: 0,
         behavior: "auto",
       });
-      
+
       // Navigate to first flow if we have flows
       if (transformed.length > 0) {
         navigate(`/flow/${transformed[0]._id}?${searchParams}`);
@@ -521,12 +521,7 @@ function FlowListEntry({ flow, isActive, onHeartClick }: FlowListEntryProps) {
           )}
         </div>
 
-        <div className="w-5 mr-2 self-center shrink-0">
-          {flow.child_id != "000000000000000000000000" ||
-          flow.parent_id != "000000000000000000000000" ? (
-            <LinkIcon className="text-blue-500 dark:text-blue-400" />
-          ) : undefined}
-        </div>
+
         <div className="flex-1 shrink ">
           <div className="flex">
             <div className="shrink-0">

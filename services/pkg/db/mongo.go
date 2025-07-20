@@ -290,48 +290,11 @@ func (db MongoDatabase) InsertFlow(flow FlowEntry) {
 		flowItem.Raw = newRaw
 	}
 
-	if len(flow.Fingerprints) > 0 {
-		query := bson.M{
-			"fingerprints": bson.M{
-				"$in": flow.Fingerprints,
-			},
-		}
-		opts := options.FindOne().SetSort(bson.M{"time": -1})
-
-		type connectedFlow struct {
-			MongoID primitive.ObjectID `bson:"_id"`
-		}
-
-		// TODO does this return the first one? If multiple documents satisfy the given query expression, then this method will return the first document according to the natural order which reflects the order of documents on the disk.
-		connFlow := connectedFlow{}
-		err := flowCollection.FindOne(context.TODO(), query, opts).Decode(&connFlow)
-
-		// There is a connected flow
-		if err == nil {
-			//TODO Maybe add the childs fingerprints to mine?
-			flow.ChildId = connFlow.MongoID
-		}
-	}
-
 	// TODO; use insertMany instead
-	insertion, err := flowCollection.InsertOne(context.TODO(), flow)
+	_, err := flowCollection.InsertOne(context.TODO(), flow)
 	if err != nil {
 		log.Println("Error occured while inserting record: ", err)
 		log.Println("NO PCAP DATA WILL BE AVAILABLE FOR: ", flow.Filename)
-	}
-
-	if flow.ChildId == primitive.NilObjectID {
-		return
-	}
-
-	query := bson.M{"_id": flow.ChildId}
-
-	info := bson.M{"$set": bson.M{"parent_id": insertion.InsertedID}}
-
-	_, err = flowCollection.UpdateOne(context.TODO(), query, info)
-	//TODO error handling
-	if err != nil {
-		log.Println("Error occured while updating record: ", err)
 	}
 }
 
@@ -583,17 +546,18 @@ func (db MongoDatabase) GetLastFlows(ctx context.Context, limit int) ([]FlowEntr
 }
 
 type GetFlowsOptions struct {
-	FromTime    int64
-	ToTime      int64
-	IncludeTags []string
-	ExcludeTags []string
-	DstPort     int
-	DstIp       string
-	SrcPort     int
-	SrcIp       string
-	Limit       int
-	Offset      int
-	FlowData    string // Optional data field to filter flows by
+	FromTime     int64
+	ToTime       int64
+	IncludeTags  []string
+	ExcludeTags  []string
+	DstPort      int
+	DstIp        string
+	SrcPort      int
+	SrcIp        string
+	Limit        int
+	Offset       int
+	FlowData     string   // Optional data field to filter flows by
+	Fingerprints []int // Optional fingerprints to filter flows by
 }
 
 func (db MongoDatabase) GetFlows(ctx context.Context, opts *GetFlowsOptions) ([]FlowEntry, error) {
@@ -652,6 +616,11 @@ func (db MongoDatabase) GetFlows(ctx context.Context, opts *GetFlowsOptions) ([]
 		if opts.FlowData != "" {
 			// Corretto: cerca la regex su tutti i campi 'data' dentro l'array 'flow'
 			query["flow.data"] = bson.M{"$regex": opts.FlowData, "$options": "i"} // Case-insensitive regex match
+		}
+
+		if len(opts.Fingerprints) > 0 {
+			// search for fingerprints in the flow.fingerprints array
+			query["fingerprints"] = bson.M{"$in": opts.Fingerprints}
 		}
 	}
 

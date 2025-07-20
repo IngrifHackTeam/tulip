@@ -32,15 +32,7 @@ export const tulipApi = createApi({
         },
         // TODO: fix the below tags mutation (make backend handle empty tags!)
         // Diederik gives you a beer once this has been fixed
-        body: JSON.stringify({
-          ...query,
-          includeTags:
-            query.includeTags.length > 0 ? query.includeTags : undefined,
-          excludeTags:
-            query.excludeTags.length > 0 ? query.excludeTags : undefined,
-          limit: query.limit || 50,
-          offset: query.offset || 0,
-        }),
+        body: JSON.stringify(query),
       }),
     }),
     getTags: builder.query<string[], void>({

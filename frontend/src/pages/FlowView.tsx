@@ -1,7 +1,7 @@
-import { useSearchParams, useParams, useNavigate } from "react-router";
+import { useSearchParams, useParams } from "react-router";
 import React, { useEffect, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import type { FlowData, FullFlow } from "../types";
+import type { Flow, FlowData, FullFlow } from "../types";
 import { Buffer } from "buffer";
 import {
   TEXT_FILTER_KEY,
@@ -24,8 +24,10 @@ import {
   useLazyToPwnToolsQuery,
   useToSinglePythonRequestQuery,
   useGetFlagRegexQuery,
+  useGetFlowsQuery,
 } from "../api";
 import escapeStringRegexp from "escape-string-regexp";
+import { NavLink } from "react-router";
 
 const SECONDARY_NAVBAR_HEIGHT = 50;
 
@@ -64,7 +66,7 @@ function FlowContainer({
   children: React.ReactNode;
 }) {
   return (
-    <div className="pb-5 flex flex-col border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/70 text-gray-800 dark:text-gray-100 shadow-sm">
+    <div className=" flex flex-col border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/70 text-gray-800 dark:text-gray-100 shadow-sm">
       <div className="ml-auto">
         <CopyButton copyText={copyText}></CopyButton>
       </div>
@@ -78,21 +80,15 @@ function HexFlow({ flow }: { flow: FlowData }) {
   return <FlowContainer copyText={hex}>{hex}</FlowContainer>;
 }
 
-function fastTextHash(text: string): string {
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    hash = (hash << 5) - hash + text.charCodeAt(i);
-    hash |= 0; // Convert to 32bit integer
-  }
-  return hash.toString(16); // Convert to hexadecimal string
-}
-
 function highlightText(
   flowText: string,
   search_string: string,
   flag_string: string,
 ) {
-  if (flowText.length > MAX_LENGTH_FOR_HIGHLIGHT || (flag_string === "" && search_string === "")) {
+  if (
+    flowText.length > MAX_LENGTH_FOR_HIGHLIGHT ||
+    (flag_string === "" && search_string === "")
+  ) {
     return flowText;
   }
   try {
@@ -105,14 +101,17 @@ function highlightText(
     if (flag_string !== "") {
       try {
         flag_regex = new RegExp(flag_string, "g");
-      } catch (e) {
+      } catch {
         flag_regex = null;
       }
     }
     // Costruisci una regex combinata per trovare tutti i match
     let combined_regex: RegExp | null = null;
     if (search_regex && flag_regex) {
-      combined_regex = new RegExp(`(${search_regex.source})|(${flag_regex.source})`, "gi");
+      combined_regex = new RegExp(
+        `(${search_regex.source})|(${flag_regex.source})`,
+        "gi",
+      );
     } else if (search_regex) {
       combined_regex = search_regex;
     } else if (flag_regex) {
@@ -134,7 +133,9 @@ function highlightText(
         className = "bg-red-200 dark:bg-red-900 rounded-sm";
       }
       result.push(
-        <span key={idx++ + '-' + match.index} className={className}>{match[0]}</span>
+        <span key={idx++ + "-" + match.index} className={className}>
+          {match[0]}
+        </span>,
       );
       lastIndex = combined_regex.lastIndex;
     }
@@ -244,13 +245,13 @@ function downloadBlob(
 }
 
 type FlowProps = {
-  full_flow: FullFlow;
+  fullFlow: FullFlow;
   flow: FlowData;
   delta_time: number;
   id: string;
 };
 
-function Flow({ full_flow, flow, delta_time, id }: FlowProps) {
+function Flow({ fullFlow: fullFlow, flow, delta_time, id }: FlowProps) {
   const formatted_time = format(new Date(flow.time), "HH:mm:ss:SSS");
   const displayOptions = ["Plain", "Hex", "Web", "PythonRequest"];
 
@@ -263,9 +264,9 @@ function Flow({ full_flow, flow, delta_time, id }: FlowProps) {
   const flowBody = getFlowBody(flow, flowType);
 
   return (
-    <div className="text-mono" id={id}>
+    <div id={id}>
       <div
-        className="sticky shadow bg-gray-50 dark:bg-gray-900/70 overflow-auto py-1 border border-gray-300 dark:border-gray-700 top-12 cursor-pointer select-none flex items-center h-6 gap-2"
+        className="sticky shadow bg-gray-50 dark:bg-gray-900/70 overflow-auto py-1 border border-gray-300 dark:border-gray-700 top-12 cursor-pointer select-none flex items-center gap-2"
         onClick={() => setCollapsed((c) => !c)}
         title={collapsed ? "Espandi richiesta" : "Chiudi richiesta"}
         style={{ userSelect: "none" }}
@@ -365,7 +366,7 @@ function Flow({ full_flow, flow, delta_time, id }: FlowProps) {
           {displayOption === "PythonRequest" && (
             <PythonRequestFlow
               flow={flow}
-              fullFlow={full_flow}
+              fullFlow={fullFlow}
             ></PythonRequestFlow>
           )}
         </div>
@@ -473,9 +474,10 @@ function FlowOverview({ flow }: { flow: FullFlow }) {
           <div className="">
             [
             {flow.flagids.map((query, i) => (
-              <span key={query}>
+              <p key={query}>
                 {i > 0 ? ", " : ""}
                 <button
+                  type="button"
                   className="font-bold"
                   onClick={() => {
                     searchParams.set(FILTER_KEY, escapeStringRegexp(query));
@@ -484,7 +486,20 @@ function FlowOverview({ flow }: { flow: FullFlow }) {
                 >
                   {query}
                 </button>
-                <span className="ml-1 text-blue-700" title="FlagId">🏷️</span>
+              </p>
+            ))}
+            ]
+          </div>
+
+          <div className="text-right">Fingerprints: </div>
+          <div>
+            [
+            {(flow.fingerprints ?? []).map((fp, i) => (
+              <span key={fp}>
+                {i > 0 ? ", " : ""}
+                <span className="font-mono bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-xs">
+                  {fp}
+                </span>
               </span>
             ))}
             ]
@@ -506,9 +521,7 @@ function FlowOverview({ flow }: { flow: FullFlow }) {
 }
 
 export function FlowView() {
-  const [searchParams] = useSearchParams();
   const params = useParams();
-  const navigate = useNavigate();
 
   const id = params.id;
 
@@ -627,49 +640,6 @@ export function FlowView() {
         className="sticky shadow-md top-0 bg-white overflow-auto border-b border-b-gray-300 flex z-100 dark:bg-gray-800 dark:border-gray-600"
         style={{ height: SECONDARY_NAVBAR_HEIGHT }}
       >
-        {flow?.child_id != "000000000000000000000000" ||
-        flow?.parent_id != "000000000000000000000000" ? (
-          <div className="flex align-middle p-2 gap-3">
-            <button
-              type="button"
-              className="bg-yellow-700 text-white px-2 text-sm rounded-md disabled:opacity-50 hover:bg-yellow-800 cursor-pointer"
-              key={"parent" + flow.parent_id}
-              disabled={flow?.parent_id === "000000000000000000000000"}
-              onMouseDown={(e) => {
-                if (e.button === 1) {
-                  // handle opening in new tab
-                  window.open(
-                    `/flow/${flow.parent_id}?${searchParams}`,
-                    "_blank",
-                  );
-                } else if (e.button === 0) {
-                  navigate(`/flow/${flow.parent_id}?${searchParams}`);
-                }
-              }}
-            >
-              Parent
-            </button>
-            <button
-              type="button"
-              className="bg-yellow-700 text-white px-2 text-sm rounded-md disabled:opacity-50 hover:bg-yellow-800 cursor-pointer"
-              key={"child" + flow.child_id}
-              disabled={flow?.child_id === "000000000000000000000000"}
-              onMouseDown={(e) => {
-                if (e.button === 1) {
-                  // handle opening in new tab
-                  window.open(
-                    `/flow/${flow.child_id}?${searchParams}`,
-                    "_blank",
-                  );
-                } else if (e.button === 0) {
-                  navigate(`/flow/${flow.child_id}?${searchParams}`);
-                }
-              }}
-            >
-              Child
-            </button>
-          </div>
-        ) : undefined}
         <div className="flex align-middle p-2 gap-3 ml-auto">
           <button
             type="button"
@@ -689,21 +659,103 @@ export function FlowView() {
         </div>
       </div>
 
-      {flow ? <FlowOverview flow={flow}></FlowOverview> : undefined}
       <div key={flow._id}>
+        {flow ? <FlowOverview flow={flow}></FlowOverview> : undefined}
+
+        {(flow?.fingerprints?.length ?? 0) > 0 ? (
+          <FlowFingerprintTimeline
+            id={flow._id}
+            fingerprints={flow.fingerprints}
+          ></FlowFingerprintTimeline>
+        ) : undefined}
+
         {flow?.flow.map((flow_data, i, a) => {
           const delta_time = a[i].time - (a[i - 1]?.time ?? a[i].time);
           return (
             <Flow
               flow={flow_data}
               delta_time={delta_time}
-              full_flow={flow}
+              fullFlow={flow}
               key={i}
               id={flow._id + "-" + i}
             />
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function FlowFingerprintTimeline({
+  id,
+  fingerprints,
+}: {
+  id: string;
+  fingerprints: string[];
+}) {
+  const {
+    data: relatedFlows,
+    isError: relatedFlowsError,
+    isLoading: relatedFlowsLoading,
+  } = useGetFlowsQuery({
+    fingerprints: fingerprints,
+    limit: 5,
+  });
+
+  function renderTimeline(relatedFlows: Flow[]) {
+    return (
+      <div className="relative pl-4">
+        {/* Vertical line removed */}
+        <ul className="space-y-1">
+          {relatedFlows.map((relatedFlow) => (
+            <li
+              key={relatedFlow._id}
+              className="relative flex items-center group min-h-6"
+            >
+              {/* Timeline dot */}
+              <div className="absolute left-0 top-1/2 -translate-y-1/2">
+                <span className="flex items-center justify-center w-2.5 h-2.5 rounded-full bg-blue-500 dark:bg-blue-400 border-2 border-white dark:border-gray-800 shadow transition-transform group-hover:scale-110"></span>
+              </div>
+              <div className="ml-4 flex items-center gap-2 text-xs">
+                <span className="text-gray-500 dark:text-gray-400 font-mono min-w-[110px] text-[11px] text-right">
+                  {relatedFlow.time
+                    ? format(new Date(relatedFlow.time), "yyyy-MM-dd HH:mm:ss")
+                    : ""}
+                </span>
+                <NavLink
+                  to={`/flow/${relatedFlow._id}`}
+                  className="font-mono text-xs text-blue-700 dark:text-blue-400 underline hover:bg-blue-100 dark:hover:bg-blue-900 px-1 py-0.5 rounded transition-colors cursor-pointer"
+                  title={relatedFlow._id}
+                >
+                  {relatedFlow._id}
+                </NavLink>
+                {id === relatedFlow._id ? "(this flow)" : ""}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-gray-200 dark:bg-gray-800 p-3">
+      <div className="font-extrabold text-base mb-2 text-gray-800 dark:text-gray-100">
+        Related Flows
+      </div>
+      {relatedFlowsLoading ? (
+        <div className="text-gray-500 dark:text-gray-400">Loading...</div>
+      ) : relatedFlowsError ? (
+        <div className="text-red-500 dark:text-red-400">
+          Error fetching related flows
+        </div>
+      ) : relatedFlows && relatedFlows.length > 0 ? (
+        renderTimeline(relatedFlows)
+      ) : (
+        <div className="text-gray-500 dark:text-gray-400">
+          No related flows found.
+        </div>
+      )}
     </div>
   );
 }
