@@ -98,3 +98,68 @@ func TestSetAddAll(t *testing.T) {
 		})
 	}
 }
+
+func TestSetAddSet(t *testing.T) {
+	cases := []struct {
+		name     string
+		set      Set[string]
+		other    Set[string]
+		expected Set[string]
+	}{
+		{"add empty set", Set[string]{"a": {}}, Set[string]{}, Set[string]{"a": {}}},
+		{"add non-empty set", Set[string]{"a": {}}, Set[string]{"b": {}, "c": {}}, Set[string]{"a": {}, "b": {}, "c": {}}},
+		{"add same set", Set[string]{"a": {}, "b": {}}, Set[string]{"a": {}, "b": {}}, Set[string]{"a": {}, "b": {}}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.set.AddSet(c.other)
+			assert.Equal(t, len(c.set), len(c.expected), "set length mismatch")
+			for item := range c.expected {
+				assert.Contains(t, c.set, item, "expected item %s to be in the set", item)
+			}
+		})
+	}
+}
+
+func TestSetRemove(t *testing.T) {
+	cases := []struct {
+		name     string
+		set      Set[string]
+		item     string
+		expected Set[string]
+	}{
+		{"remove existing item", Set[string]{"a": {}, "b": {}}, "a", Set[string]{"b": {}}},
+		{"remove non-existing item", Set[string]{"a": {}, "b": {}}, "c", Set[string]{"a": {}, "b": {}}},
+		{"remove from empty set", Set[string]{}, "x", Set[string]{}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.set.Remove(c.item)
+			assert.Equal(t, len(c.set), len(c.expected), "set length mismatch")
+			for item := range c.expected {
+				assert.Contains(t, c.set, item, "expected item %s to be in the set", item)
+			}
+		})
+	}
+}
+
+func TestSetItems(t *testing.T) {
+	cases := []struct {
+		name     string
+		set      Set[string]
+		expected []string
+	}{
+		{"empty set", Set[string]{}, []string{}},
+		{"single item", Set[string]{"a": {}}, []string{"a"}},
+		{"multiple items", Set[string]{"a": {}, "b": {}, "c": {}}, []string{"a", "b", "c"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result := c.set.Items()
+			assert.ElementsMatch(t, c.expected, result, "expected items do not match")
+		})
+	}
+}

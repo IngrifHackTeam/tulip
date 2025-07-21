@@ -18,6 +18,8 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
+	"sync"
 	"time"
 	"tulip/pkg/db"
 
@@ -36,9 +38,18 @@ type Service struct {
 	StreamPool    *reassembly.StreamPool
 
 	AssemblerTcp *reassembly.Assembler
-	AssemblerUdp *UdpAssembler
+	AssemblerUdp *UDPAssembler
 
 	toDb chan db.FlowEntry // Channel for processed flow entries
+
+	stats Stats      // Statistics about processed packets, bytes, and flows
+	mu    sync.Mutex // Mutex to protect stats updates
+}
+
+type Stats struct {
+	Processed      int64 // Total number of processed packets
+	ProcessedBytes int64 // Total number of processed bytes
+	Flows          int64 // Total number of flows processed
 }
 
 type Config struct {
@@ -61,7 +72,7 @@ func NewAssemblerService(opts Config) *Service {
 	}
 
 	streamPool := reassembly.NewStreamPool(streamFactory)
-	assemblerUdp := NewUdpAssembler()
+	assemblerUdp := NewUDPAssembler()
 
 	srv := &Service{
 		Defragmenter:  ip4defrag.NewIPv4Defragmenter(),
@@ -83,22 +94,123 @@ func NewAssemblerService(opts Config) *Service {
 	return srv
 }
 
-// HandlePcapUri processes a PCAP file from a given URI.
-func (s *Service) HandlePcapUri(ctx context.Context, fname string) {
+func (s *Service) GetStats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.stats
+}
+
+// ProcessPcapPath processes a PCAP file from a given URI.
+func (s *Service) ProcessPcapPath(
+	ctx context.Context,
+	fname string,
+) error {
 	file, err := os.Open(fname)
 	if err != nil {
-		slog.Error("Failed to open PCAP file", "file", fname, "err", err)
-		return
+		return fmt.Errorf("failed to open PCAP file %s: %w", fname, err)
 	}
 	defer file.Close()
 
 	reader, err := pcapgo.NewReader(file)
 	if err != nil {
-		slog.Error("Failed to create PCAP reader", "file", fname, "err", err)
-		return
+		return fmt.Errorf("failed to create PCAP reader for %s: %w", fname, err)
 	}
 
-	s.ProcessPcapHandle(ctx, reader, fname)
+	return s.ProcessPcapReader(ctx, reader, fname)
+}
+
+// ProcessPcapReader processes packets from a pcapgo.Reader.
+func (s *Service) ProcessPcapReader(
+	ctx context.Context,
+	handle *pcapgo.Reader,
+	fname string,
+) error {
+	var source *gopacket.PacketSource
+
+	linkType := handle.LinkType()
+	switch linkType {
+	case layers.LinkTypeIPv4:
+		source = gopacket.NewPacketSource(handle, layers.LayerTypeIPv4)
+	default:
+		source = gopacket.NewPacketSource(handle, linkType)
+	}
+
+	source.Lazy = s.TcpLazy
+	source.NoCopy = true
+
+	return s.processPacketSrc(ctx, source, fname)
+}
+
+func (s *Service) processPacketSrc(
+	ctx context.Context,
+	src *gopacket.PacketSource,
+	fname string,
+) error {
+
+	var (
+		bytes     int64 = 0     // Total bytes processed
+		processed int64 = 0     // Total packets processed
+		finished  bool  = false // Whether we consumed all packets
+	)
+
+	toBeSkipped := s.checkProcessedCount(fname)
+	slog.DebugContext(ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", fname)
+
+	defer func() {
+		// Update stats and database entry after processing
+		// This is done in a deferred function to ensure it runs even if an error occurs
+
+		s.mu.Lock()
+		s.stats.Processed += processed
+		s.stats.ProcessedBytes += bytes
+		s.mu.Unlock()
+
+		s.DB.InsertPcap(db.PcapFile{
+			FileName: fname,
+			Position: toBeSkipped + processed,
+			Finished: finished,
+		})
+	}()
+
+	s.FlushConnections()
+
+	nodefrag := false
+	lastFlush := time.Now()
+
+	for packet := range src.Packets() {
+		select {
+		case <-ctx.Done():
+			slog.Warn("context cancelled, stopping packet processing", "file", fname)
+			finished = false
+			return ctx.Err()
+		default:
+		}
+
+		// skip until toBeSkipped is 0
+		if toBeSkipped >= 0 {
+			toBeSkipped--
+			continue
+		}
+
+		processed++
+
+		data := packet.Data()
+		bytes += int64(len(data))
+		shouldStop := s.processPacket(packet, fname, nodefrag)
+		if shouldStop {
+			finished = false
+			return fmt.Errorf("processPacket returned true, stopping processing for %s", fname)
+		}
+
+		if s.shouldFlushConnections(lastFlush) {
+			s.FlushConnections()
+			lastFlush = time.Now()
+		}
+	}
+
+	finished = true
+	return nil
 }
 
 // FlushConnections closes and saves connections that are older than the configured timeouts.
@@ -128,106 +240,13 @@ func (s *Service) FlushConnections() {
 	}
 }
 
-// ProcessPcapHandle processes a PCAP handle, reading packets and processing them.
-func (s *Service) ProcessPcapHandle(ctx context.Context, handle *pcapgo.Reader, fname string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("Recovered from panic in ProcessPcapHandle", "error", r, "file", fname)
-		}
-	}()
-
-	// Check if the file has already been processed
-	exists, file := s.DB.GetPcap(fname)
-	processedCount := int64(0)
-	if exists {
-		if file.Finished {
-			slog.Info("PCAP file already processed", "file", fname)
-			return
-		}
-		processedCount = file.Position
-		slog.Info("skipping already processed packets", "file", fname, "count", processedCount)
-	}
-
-	source := s.setupPacketSource(handle)
-	s.FlushConnections()
-
-	count, lastFlush := int64(0), time.Now()
-	bytes := int64(0)
-	nodefrag := false
-
-	startTime := time.Now()
-
-	finished := true
-
-packetLoop:
-	for packet := range source.Packets() {
-		select {
-		case <-ctx.Done():
-			slog.Warn("context cancelled, stopping packet processing", "file", fname)
-			finished = false
-			break packetLoop
-		default:
-		}
-
-		count++
-		if count < processedCount+1 {
-			continue // skip already processed packets
-		}
-
-		data := packet.Data()
-		bytes += int64(len(data))
-		done := s.processPacket(packet, fname, nodefrag)
-		if done {
-			finished = false
-			break
-		}
-
-		if s.shouldFlushConnections(lastFlush) {
-			s.FlushConnections()
-			lastFlush = time.Now()
-		}
-	}
-
-	elapsed := time.Since(startTime)
-	avgPkts := float64(count) / elapsed.Seconds()
-	avgMBytes := float64(bytes) / elapsed.Seconds() / 1e6 // MB/s
-	slog.Info("Processed packets",
-		"count", count-processedCount,
-		"elapsed", elapsed,
-		"pkt/s", fmt.Sprintf("%.2f", avgPkts),
-		"MB/s", fmt.Sprintf("%.2f", avgMBytes),
-		"file", fname, "finished", finished,
-	)
-
-	s.DB.InsertPcap(db.PcapFile{
-		FileName: fname,
-		Position: count,
-		Finished: finished,
-	})
-}
-
 // checkProcessedCount returns the count of already processed packets for a given file.
 func (s *Service) checkProcessedCount(fname string) int64 {
 	exists, file := s.DB.GetPcap(fname)
 	if exists {
 		return file.Position
 	}
-	return 0
-}
-
-// setupPacketSource initializes the gopacket.PacketSource based on the link type.
-func (s *Service) setupPacketSource(handle *pcapgo.Reader) *gopacket.PacketSource {
-	linktype := handle.LinkType()
-	var source *gopacket.PacketSource
-	switch linktype {
-	case layers.LinkTypeIPv4:
-		source = gopacket.NewPacketSource(handle, layers.LayerTypeIPv4)
-	default:
-		source = gopacket.NewPacketSource(handle, linktype)
-	}
-	source.Lazy = s.TcpLazy
-	source.NoCopy = true
-	return source
+	return 0 // file not found, return 0 to process all packets
 }
 
 // processPacket handles a single packet: skipping, defragmentation, protocol dispatch (TCP/UDP), and error handling.
@@ -348,21 +367,27 @@ func searchForFlagsInItem(
 // sanitizeFlowItemData copies the raw data of each flow item into
 // the Data field, replacing non-printable characters with '.'.
 func sanitizeFlowItemData(flow *db.FlowEntry) {
-	// Preprocess the flow items to ensure they are ready for database insertion
 	for idx := range flow.Flow {
 		flowItem := &flow.Flow[idx]
-
-		// Filter the data string down to only printable characters
-		printableData := make([]byte, len(flowItem.Raw))
-		for i, b := range flowItem.Raw {
-			if (b >= 32 && b <= 126) || b == '\t' || b == '\r' || b == '\n' {
-				printableData[i] = b
-			} else {
-				printableData[i] = '.'
-			}
-		}
-		flowItem.Data = string(printableData)
+		flowItem.Data = sanitizeRawData(flowItem.Raw)
 	}
+}
+
+// sanitizeRawData filters the raw byte slice to only include printable characters,
+// replacing non-printable characters with '.'.
+func sanitizeRawData(raw []byte) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+
+	// Filter the data string down to only printable characters
+	for _, c := range raw {
+		if (c >= 32 && c <= 126) || c == '\t' || c == '\r' || c == '\n' {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('.') // Replace non-printable characters with '.'
+		}
+	}
+	return b.String()
 }
 
 func (s *Service) handleInsertionQueue() {
@@ -398,11 +423,8 @@ func (s *Service) insertFlows(flows []db.FlowEntry) {
 		return
 	}
 
-	slog.Debug("Inserting flows into database", "count", len(flows))
 	err := s.DB.InsertFlows(context.Background(), flows)
 	if err != nil {
 		slog.Error("Failed to insert flows into database", "err", err)
-	} else {
-		slog.Info("Successfully inserted flows into database", "count", len(flows))
 	}
 }

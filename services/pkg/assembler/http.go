@@ -23,23 +23,6 @@ import (
 	"github.com/andybalholm/brotli"
 )
 
-const DecompressionSizeLimit = int64(streamdoc_limit)
-
-func cookieFingerprint(cookie *http.Cookie) uint32 {
-	// Prevent exploitation by encoding :pray:, who cares about collisions
-	checksum := crc32.Checksum([]byte(url.QueryEscape(cookie.Name)), crc32.IEEETable)
-	checksum = crc32.Update(checksum, crc32.IEEETable, []byte("="))
-	checksum = crc32.Update(checksum, crc32.IEEETable, []byte(url.QueryEscape(cookie.Value)))
-	return checksum
-}
-
-func fingerprintsFromCookies(set *Set[uint32], cookies []*http.Cookie) {
-	for _, cookie := range cookies {
-		checksum := cookieFingerprint(cookie)
-		set.Add(checksum)
-	}
-}
-
 // Parse and simplify every item in the flow. Items that were not successfuly
 // parsed are left as-is.
 //
@@ -54,6 +37,23 @@ func (s *Service) parseHttpFlow(flow *db.FlowEntry) {
 
 	if s.Experimental {
 		flow.Fingerprints = fingerprints.Items()
+	}
+}
+
+const DecompressionSizeLimit = int64(streamdoc_limit)
+
+func cookieFingerprint(cookie *http.Cookie) uint32 {
+	// Prevent exploitation by encoding :pray:, who cares about collisions
+	checksum := crc32.Checksum([]byte(url.QueryEscape(cookie.Name)), crc32.IEEETable)
+	checksum = crc32.Update(checksum, crc32.IEEETable, []byte("="))
+	checksum = crc32.Update(checksum, crc32.IEEETable, []byte(url.QueryEscape(cookie.Value)))
+	return checksum
+}
+
+func fingerprintsFromCookies(set *Set[uint32], cookies []*http.Cookie) {
+	for _, cookie := range cookies {
+		checksum := cookieFingerprint(cookie)
+		set.Add(checksum)
 	}
 }
 

@@ -52,6 +52,7 @@ func init() {
 	rootCmd.Flags().Bool("nonstrict", false, "Enable non-strict mode for TCP stream assembly")
 	rootCmd.Flags().String("connection-timeout", "30s", "Connection timeout for both TCP and UDP flows (e.g. 30s, 1m)")
 	rootCmd.Flags().Bool("pperf", false, "Enable performance profiling (experimental)")
+	rootCmd.Flags().Bool("verbose", false, "Enable verbose logging")
 
 	viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
 	viper.BindPFlag("watch-dir", rootCmd.Flags().Lookup("watch-dir"))
@@ -62,6 +63,7 @@ func init() {
 	viper.BindPFlag("nonstrict", rootCmd.Flags().Lookup("nonstrict"))
 	viper.BindPFlag("connection-timeout", rootCmd.Flags().Lookup("connection-timeout"))
 	viper.BindPFlag("pperf", rootCmd.Flags().Lookup("pperf"))
+	viper.BindPFlag("verbose", rootCmd.Flags().Lookup("verbose"))
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -69,9 +71,15 @@ func init() {
 }
 
 func runAssembler(cmd *cobra.Command, args []string) {
+	verbose := viper.GetBool("verbose")
+	level := slog.LevelInfo
+	if verbose {
+		level = slog.LevelDebug
+	}
+
 	// Setup logging
 	logger := slog.New(tint.NewHandler(os.Stderr, &tint.Options{
-		Level:      slog.LevelInfo,
+		Level:      level,
 		TimeFormat: "2006-01-02 15:04:05",
 	}))
 	slog.SetDefault(logger)
@@ -202,10 +210,39 @@ watchLoop:
 			seen[fullPath] = struct{}{}
 
 			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
-			service.HandlePcapUri(ctx, fullPath)
+
+			processPcapFile(ctx, service, fullPath)
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+func processPcapFile(ctx context.Context, service *assembler.Service, fullPath string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Recovered from panic in ProcessPcapHandle", "error", r, "file", fullPath)
+		}
+	}()
+
+	startTime := time.Now()
+	oldStats := service.GetStats()
+	service.ProcessPcapPath(ctx, fullPath)
+	newStats := service.GetStats()
+
+	elapsed := time.Since(startTime)
+
+	totPkts := newStats.Processed - oldStats.Processed
+	totBytes := newStats.ProcessedBytes - oldStats.ProcessedBytes
+	pktsPerSec := (float64(totPkts) / elapsed.Seconds())
+	totBytesPerSec := float64(totBytes) / elapsed.Seconds()
+
+	slog.Info("Processed PCAP file", slog.String("file", fullPath),
+		"elapsed_ms", elapsed.Milliseconds(),
+		"packets", totPkts,
+		"bytes", totBytes,
+		"pps", pktsPerSec,
+		"MB_per_sec", totBytesPerSec/(1024*1024),
+	)
 }
 
 func main() {
