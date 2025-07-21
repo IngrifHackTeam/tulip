@@ -48,7 +48,7 @@ func (f *TcpStreamFactory) New(
 ) reassembly.Stream {
 
 	// cast to our context type
-	context, ok := ac.(*Context)
+	context, ok := ac.(Context)
 	if !ok {
 		panic("TcpStreamFactory: AssemblerContext is not of type *assembler.Context")
 	}

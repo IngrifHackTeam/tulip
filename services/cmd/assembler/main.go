@@ -214,13 +214,13 @@ watchLoop:
 			seen[fullPath] = struct{}{}
 
 			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
-			processPcapFile(service, fullPath)
+			processPcapFile(ctx, service, fullPath)
 		}
 		time.Sleep(pollInterval)
 	}
 }
 
-func processPcapFile(service *assembler.Service, fullPath string) {
+func processPcapFile(ctx context.Context, service *assembler.Service, fullPath string) {
 	startTime := time.Now()
 
 	defer func() {
@@ -242,7 +242,7 @@ func processPcapFile(service *assembler.Service, fullPath string) {
 		return
 	}
 
-	processPcapReader(service, reader, fullPath)
+	processPcapReader(ctx, service, reader, fullPath)
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)
@@ -263,7 +263,7 @@ func processPcapFile(service *assembler.Service, fullPath string) {
 
 // processPcapReader creates a gopacket PacketSource from a pcapgo.Reader and processes
 // packets using the assembler service.
-func processPcapReader(s *assembler.Service, handle *pcapgo.Reader, fname string) error {
+func processPcapReader(ctx context.Context, s *assembler.Service, handle *pcapgo.Reader, fname string) error {
 	var source *gopacket.PacketSource
 
 	linkType := handle.LinkType()
@@ -277,7 +277,7 @@ func processPcapReader(s *assembler.Service, handle *pcapgo.Reader, fname string
 	source.Lazy = s.TcpLazy
 	source.NoCopy = true
 
-	return s.ProcessPacketSrc(source, fname)
+	return s.ProcessPacketSrc(ctx, source, fname)
 }
 
 func main() {

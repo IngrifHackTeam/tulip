@@ -31,7 +31,11 @@ import (
 type Service struct {
 	Config
 
+	// Stage 1: level 3 defragmentation
+
 	defragmenter *ip4defrag.IPv4Defragmenter
+
+	// Stage 2: TCP/UDP reassembly
 
 	tcpStreamFactory *TcpStreamFactory
 	tcpStreamPool    *reassembly.StreamPool
@@ -39,11 +43,19 @@ type Service struct {
 
 	udpAssembler *UDPAssembler
 
+	// Stage 3: Analysis
+
+	httpAnalyzer *HttpAnalyzer // HTTP analyzer for flow items
+
+	// Stage 4: Database insertion
+
 	toDbCh chan db.FlowEntry // Channel for processed flow entries
 
-	ctx   context.Context // Context for cancellation
-	stats Stats           // Statistics about processed packets, bytes, and flows
-	mu    sync.Mutex      // Mutex to protect stats updates
+	// Misc state
+
+	stats     Stats        // Statistics about processed packets, bytes, and flows
+	mu        sync.Mutex   // Mutex to protect stats updates
+	flushTick *time.Ticker // Ticker for flushing connections
 }
 
 type Stats struct {
@@ -86,9 +98,11 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 		udpAssembler: udpAssembler,
 
+		httpAnalyzer: &HttpAnalyzer{Experimental: opts.Experimental},
+
 		toDbCh: make(chan db.FlowEntry),
 
-		ctx: ctx,
+		flushTick: time.NewTicker(opts.FlushInterval),
 	}
 
 	onComplete := func(fe db.FlowEntry) { srv.reassemblyCallback(fe) }
@@ -99,33 +113,33 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 	return srv
 }
 
-func (s *Service) GetStats() Stats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (a *Service) GetStats() Stats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
-	return s.stats
+	return a.stats
 }
 
-func (s *Service) ProcessPacketSrc(src *gopacket.PacketSource, sourceName string) error {
+func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSource, sourceName string) error {
 	var (
 		bytes     int64 = 0     // Total bytes processed
 		processed int64 = 0     // Total packets processed
 		finished  bool  = false // Whether we consumed all packets
 	)
 
-	toBeSkipped := s.checkProcessedCount(sourceName)
-	slog.DebugContext(s.ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", sourceName)
+	toBeSkipped := a.checkProcessedCount(sourceName)
+	slog.DebugContext(ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", sourceName)
 
 	defer func() {
 		// Update stats and database entry after processing
 		// This is done in a deferred function to ensure it runs even if an error occurs
 
-		s.mu.Lock()
-		s.stats.Processed += processed
-		s.stats.ProcessedBytes += bytes
-		s.mu.Unlock()
+		a.mu.Lock()
+		a.stats.Processed += processed
+		a.stats.ProcessedBytes += bytes
+		a.mu.Unlock()
 
-		s.DB.InsertPcap(db.PcapFile{
+		a.DB.InsertPcap(db.PcapFile{
 			FileName: sourceName,
 			Position: toBeSkipped + processed,
 			Finished: finished,
@@ -133,14 +147,15 @@ func (s *Service) ProcessPacketSrc(src *gopacket.PacketSource, sourceName string
 	}()
 
 	nodefrag := false
-	lastFlush := time.Now()
 
 	for packet := range src.Packets() {
 		select {
-		case <-s.ctx.Done():
+		case <-a.flushTick.C:
+			a.FlushConnections()
+		case <-ctx.Done():
 			slog.Warn("context cancelled, stopping packet processing", "file", sourceName)
 			finished = false
-			return s.ctx.Err()
+			return ctx.Err()
 		default:
 		}
 
@@ -154,14 +169,11 @@ func (s *Service) ProcessPacketSrc(src *gopacket.PacketSource, sourceName string
 
 		data := packet.Data()
 		bytes += int64(len(data))
-		shouldStop := s.processPacket(packet, sourceName, nodefrag)
+		shouldStop := a.processPacket(packet, sourceName, nodefrag)
 		if shouldStop {
 			finished = false
 			return fmt.Errorf("processPacket returned true, stopping processing for %s", sourceName)
 		}
-
-		// TODO: this is not thread-safe, but we can't lock a mutex every time we process a packet!
-		lastFlush = s.flushIfNeeded(lastFlush)
 	}
 
 	finished = true
@@ -170,38 +182,33 @@ func (s *Service) ProcessPacketSrc(src *gopacket.PacketSource, sourceName string
 
 // flushIfNeeded calls FlushConnections if the current time exceeds the last flush time
 // by the configured FlushInterval and returns the new last flush time.
-func (s *Service) flushIfNeeded(lastFlush time.Time) time.Time {
-	if s.FlushInterval == 0 || lastFlush.Add(s.FlushInterval).Unix() >= time.Now().Unix() {
+func (a *Service) flushIfNeeded(lastFlush time.Time) time.Time {
+	if a.FlushInterval == 0 || lastFlush.Add(a.FlushInterval).Unix() >= time.Now().Unix() {
 		return lastFlush
 	}
-	s.FlushConnections()
+	a.FlushConnections()
 	return time.Now()
 }
 
-// shouldFlushConnections determines if it's time to flush connections based on the interval.
-func (s *Service) shouldFlushConnections(lastFlush time.Time) bool {
-	return s.FlushInterval != 0 && lastFlush.Add(s.FlushInterval).Unix() < time.Now().Unix()
-}
-
 // FlushConnections closes and saves connections that are older than the configured timeouts.
-func (s *Service) FlushConnections() {
-	thresholdTcp := time.Now().Add(-s.ConnectionTcpTimeout)
-	thresholdUdp := time.Now().Add(-s.ConnectionUdpTimeout)
+func (a *Service) FlushConnections() {
+	thresholdTcp := time.Now().Add(-a.ConnectionTcpTimeout)
+	thresholdUdp := time.Now().Add(-a.ConnectionUdpTimeout)
 	flushed, closed, discarded := 0, 0, 0
 
-	if s.ConnectionTcpTimeout != 0 {
-		flushed, closed = s.tcpAssembler.FlushCloseOlderThan(thresholdTcp)
-		discarded = s.defragmenter.DiscardOlderThan(thresholdTcp)
+	if a.ConnectionTcpTimeout != 0 {
+		flushed, closed = a.tcpAssembler.FlushCloseOlderThan(thresholdTcp)
+		discarded = a.defragmenter.DiscardOlderThan(thresholdTcp)
 	}
 
 	if flushed != 0 || closed != 0 || discarded != 0 {
 		slog.Info("Flushed connections", "flushed", flushed, "closed", closed, "discarded", discarded)
 	}
 
-	if s.ConnectionUdpTimeout != 0 {
-		udpFlows := s.udpAssembler.CompleteOlderThan(thresholdUdp)
+	if a.ConnectionUdpTimeout != 0 {
+		udpFlows := a.udpAssembler.CompleteOlderThan(thresholdUdp)
 		for _, flow := range udpFlows {
-			s.reassemblyCallback(*flow)
+			a.reassemblyCallback(*flow)
 		}
 
 		if len(udpFlows) != 0 {
@@ -211,8 +218,8 @@ func (s *Service) FlushConnections() {
 }
 
 // checkProcessedCount returns the count of already processed packets for a given file.
-func (s *Service) checkProcessedCount(fname string) int64 {
-	exists, file := s.DB.GetPcap(fname)
+func (a *Service) checkProcessedCount(fname string) int64 {
+	exists, file := a.DB.GetPcap(fname)
 	if exists {
 		return file.Position
 	}
@@ -225,15 +232,15 @@ type Context struct {
 	FileName string // FileName is the name of the file being processed
 }
 
-func (c *Context) GetCaptureInfo() gopacket.CaptureInfo { return c.CaptureInfo }
+func (c Context) GetCaptureInfo() gopacket.CaptureInfo { return c.CaptureInfo }
 
 // processPacket handles a single packet: skipping, defragmentation, protocol dispatch (TCP/UDP), and error handling.
 // Returns true if processing should stop.
-func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag bool) (stop bool) {
+func (a *Service) processPacket(packet gopacket.Packet, fname string, noDefrag bool) (stop bool) {
 
 	// defrag the packet, sequentially
 	if !noDefrag {
-		complete, err := s.defragPacket(packet)
+		complete, err := a.defragPacket(packet)
 		if err != nil {
 			return true // stop processing due to error
 		} else if !complete {
@@ -247,13 +254,13 @@ func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag b
 	}
 
 	flow := packet.NetworkLayer().NetworkFlow()
-	context := &Context{packet.Metadata().CaptureInfo, fname}
+	context := Context{packet.Metadata().CaptureInfo, fname}
 
 	switch transport.LayerType() {
 	case layers.LayerTypeTCP:
-		s.tcpAssembler.AssembleWithContext(flow, transport.(*layers.TCP), context)
+		a.tcpAssembler.AssembleWithContext(flow, transport.(*layers.TCP), context)
 	case layers.LayerTypeUDP:
-		s.udpAssembler.AssembleWithContext(flow, transport.(*layers.UDP), context)
+		a.udpAssembler.AssembleWithContext(flow, transport.(*layers.UDP), context)
 	default:
 		slog.Warn("Unsupported transport layer", "layer", transport.LayerType().String(), "file", fname)
 	}
@@ -266,7 +273,7 @@ func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag b
 // Returns true if the packet is complete, false if it is still a fragment,
 // and an error if defragmentation fails.
 // If the packet is successfully defragmented, it decodes the next protocol layer.
-func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error) {
+func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error) {
 	ip4Layer := packet.Layer(layers.LayerTypeIPv4)
 	if ip4Layer == nil {
 		return true, nil // No IPv4 layer found, nothing to defragment
@@ -275,7 +282,7 @@ func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 	ip4 := ip4Layer.(*layers.IPv4)
 	oldLen := ip4.Length
 
-	newip4, defragErr := s.defragmenter.DefragIPv4(ip4)
+	newip4, defragErr := a.defragmenter.DefragIPv4(ip4)
 	if defragErr != nil {
 		slog.Error("Error while de-fragmenting", "err", defragErr)
 		return false, defragErr // stop processing due to error
@@ -305,19 +312,19 @@ func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 }
 
 // reassemblyCallback is called when a flow is completed.
-func (s *Service) reassemblyCallback(entry db.FlowEntry) {
+func (a *Service) reassemblyCallback(entry db.FlowEntry) {
 	// we first try to parse it as HTTP to decompress the body if
 	// it was compressed with gzip or similar.
-	s.parseHttpFlow(&entry)
+	a.httpAnalyzer.parseHttpFlow(&entry)
 
 	// Preprocess the flow items
 	sanitizeFlowItemData(&entry)
 
 	// search for flags in the flow items
-	applyFlagRegexTags(&entry, s.FlagRegex)
+	applyFlagRegexTags(&entry, a.FlagRegex)
 
 	// queue the flow for insertion into the database
-	s.toDbCh <- entry
+	a.toDbCh <- entry
 }
 
 // applyFlagRegexTags searches for flags in flow items using a regex pattern
@@ -391,7 +398,7 @@ func sanitizeRawData(raw []byte) string {
 	return b.String()
 }
 
-func (s *Service) handleInsertionQueue() {
+func (a *Service) handleInsertionQueue() {
 	queueSize := 200
 
 	queue := make([]db.FlowEntry, 0, queueSize)
@@ -401,20 +408,26 @@ func (s *Service) handleInsertionQueue() {
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			slog.Info("context cancelled, stopping insertion queue and dropping remaining flows")
-			return
-		case entry := <-s.toDbCh:
+		case entry, ok := <-a.toDbCh:
+			if !ok {
+				// Channel closed, insert any remaining entries in the queue
+				if len(queue) > 0 {
+					a.insertFlows(queue)
+				}
+				return
+			}
+
 			// Add the entry to the queue
 			queue = append(queue, entry)
 			if len(queue) >= queueSize {
-				s.insertFlows(queue)
+				a.insertFlows(queue)
 				queue = queue[:0] // Clear the queue
 			}
+
 		case <-time.After(500 * time.Millisecond):
 			// If the timer ticks, insert all entries in the queue
 			if len(queue) > 0 {
-				s.insertFlows(queue)
+				a.insertFlows(queue)
 				queue = queue[:0] // Clear the queue
 			}
 		}
@@ -422,12 +435,12 @@ func (s *Service) handleInsertionQueue() {
 
 }
 
-func (s *Service) insertFlows(flows []db.FlowEntry) {
+func (a *Service) insertFlows(flows []db.FlowEntry) {
 	if len(flows) == 0 {
 		return
 	}
 
-	err := s.DB.InsertFlows(context.Background(), flows)
+	err := a.DB.InsertFlows(context.Background(), flows)
 	if err != nil {
 		slog.Error("Failed to insert flows into database", "err", err)
 	}

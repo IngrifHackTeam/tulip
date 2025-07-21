@@ -82,7 +82,7 @@ func (a *UDPAssembler) AssembleWithContext(
 	ac reassembly.AssemblerContext,
 ) *UdpStream {
 	// cast to our context type
-	context, ok := ac.(*Context)
+	context, ok := ac.(Context)
 	if !ok {
 		panic("TcpStreamFactory: AssemblerContext is not of type *assembler.Context")
 	}
@@ -163,7 +163,7 @@ func (stream *UdpStream) Id() UdpStreamId {
 func (stream *UdpStream) processSegment(
 	flow gopacket.Flow,
 	udp *layers.UDP,
-	captureInfo *Context,
+	captureInfo Context,
 ) {
 	if len(udp.Payload) == 0 {
 		return // skip empty segments

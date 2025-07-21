@@ -23,41 +23,30 @@ import (
 	"github.com/andybalholm/brotli"
 )
 
+const DecompressionSizeLimit = int64(streamdoc_limit)
+
+type HttpAnalyzer struct {
+	Experimental bool // If true, we will parse cookies and generate fingerprints
+}
+
 // Parse and simplify every item in the flow. Items that were not successfuly
 // parsed are left as-is.
 //
 // If we manage to simplify a flow, the new data is placed in flowEntry.data
-func (s *Service) parseHttpFlow(flow *db.FlowEntry) {
+func (a *HttpAnalyzer) parseHttpFlow(flow *db.FlowEntry) {
 	// Use a set to get rid of duplicates
 	fingerprints := NewSet[uint32]()
 
 	for idx := range flow.Flow {
-		parseHttpFlowItem(flow, idx, s, fingerprints)
+		a.parseHttpFlowItem(flow, idx, fingerprints)
 	}
 
-	if s.Experimental {
+	if a.Experimental {
 		flow.Fingerprints = fingerprints.Items()
 	}
 }
 
-const DecompressionSizeLimit = int64(streamdoc_limit)
-
-func cookieFingerprint(cookie *http.Cookie) uint32 {
-	// Prevent exploitation by encoding :pray:, who cares about collisions
-	checksum := crc32.Checksum([]byte(url.QueryEscape(cookie.Name)), crc32.IEEETable)
-	checksum = crc32.Update(checksum, crc32.IEEETable, []byte("="))
-	checksum = crc32.Update(checksum, crc32.IEEETable, []byte(url.QueryEscape(cookie.Value)))
-	return checksum
-}
-
-func fingerprintsFromCookies(set *Set[uint32], cookies []*http.Cookie) {
-	for _, cookie := range cookies {
-		checksum := cookieFingerprint(cookie)
-		set.Add(checksum)
-	}
-}
-
-func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set[uint32]) {
+func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprints Set[uint32]) {
 	flowItem := &flow.Flow[idx]
 	// TODO; rethink the flowItem format to make this less clunky
 	reader := bufio.NewReader(bytes.NewReader(flowItem.Raw))
@@ -72,7 +61,7 @@ func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set
 
 		flow.Tags = appendUnique(flow.Tags, "http")
 
-		if s.Experimental {
+		if a.Experimental {
 			// Parse cookie and grab fingerprints
 			fingerprintsFromCookies(&fingerprints, req.Cookies())
 		}
@@ -118,7 +107,7 @@ func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set
 
 		flow.Tags = appendUnique(flow.Tags, "http")
 
-		if s.Experimental {
+		if a.Experimental {
 			// Parse cookie and grab fingerprints
 			fingerprintsFromCookies(&fingerprints, res.Cookies())
 		}
@@ -155,6 +144,21 @@ func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set
 			flow.Size = newSize
 		}
 	}
+}
+
+func fingerprintsFromCookies(set *Set[uint32], cookies []*http.Cookie) {
+	for _, cookie := range cookies {
+		checksum := cookieFingerprint(cookie)
+		set.Add(checksum)
+	}
+}
+
+func cookieFingerprint(cookie *http.Cookie) uint32 {
+	// Prevent exploitation by encoding :pray:, who cares about collisions
+	checksum := crc32.Checksum([]byte(url.QueryEscape(cookie.Name)), crc32.IEEETable)
+	checksum = crc32.Update(checksum, crc32.IEEETable, []byte("="))
+	checksum = crc32.Update(checksum, crc32.IEEETable, []byte(url.QueryEscape(cookie.Value)))
+	return checksum
 }
 
 func bodyDecompressor(r io.Reader, encoding string) (io.Reader, error) {
