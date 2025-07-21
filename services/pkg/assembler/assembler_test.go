@@ -8,12 +8,14 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 	"tulip/pkg/db"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcapgo"
+	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -101,6 +103,71 @@ func TestHandlePcapUri_DoesNotCrashOnCorruptedOrPcapng(t *testing.T) {
 				}
 			}()
 			assembler.HandlePcapUri(t.Context(), fname)
+		})
+	}
+}
+
+func TestApplyFlagRegexTags(t *testing.T) {
+
+	makeFlowEntry := func(data ...string) *db.FlowEntry {
+		flowItems := make([]db.FlowItem, len(data))
+		nextFrom := "c"
+		for i, d := range data {
+			flowItems[i] = db.FlowItem{Data: d, From: nextFrom}
+			if nextFrom == "s" {
+				nextFrom = "c"
+			} else {
+				nextFrom = "s"
+			}
+		}
+
+		return &db.FlowEntry{Flow: flowItems, Tags: []string{}, Flags: []string{}}
+	}
+
+	cases := []struct {
+		name          string
+		input         *db.FlowEntry
+		regex         string
+		expectedTags  []string
+		expectedFlags []string
+	}{
+		{
+			"no match",
+			makeFlowEntry("banana", "cherry"),
+			"[a-z]{10}=",
+			[]string{},
+			[]string{},
+		},
+		{
+			"single match flag-in",
+			makeFlowEntry("FLAG{test}", "OK"),
+			"FLAG\\{.*?\\}",
+			[]string{"flag-in"},
+			[]string{"FLAG{test}"},
+		},
+		{
+			"single match flag-out",
+			makeFlowEntry("asking for the flag", "FLAG{test}"),
+			"FLAG\\{.*?\\}",
+			[]string{"flag-out"},
+			[]string{"FLAG{test}"},
+		},
+		{
+			"empty input",
+			makeFlowEntry(),
+			"a.*",
+			[]string{},
+			[]string{},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			reg := regexp.MustCompile(c.regex)
+			applyFlagRegexTags(c.input, reg)
+
+			assert.Equal(t, c.expectedTags, c.input.Tags, "tags should match expected")
+			assert.Equal(t, c.expectedFlags, c.input.Flags, "flags should match expected")
 		})
 	}
 }

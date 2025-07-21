@@ -287,22 +287,60 @@ func (s *Service) shouldFlushConnections(lastFlush time.Time) bool {
 
 // TODO; FIXME; RDJ; this is kinda gross, but this is PoC level code
 func (s *Service) reassemblyCallback(entry db.FlowEntry) {
-	s.parseAndTagHttp(&entry)
-	s.applyFlagRegexTags(&entry)
+	// we first try to parse it as HTTP to decompress the body if
+	// it was compressed with gzip or similar.
+	s.parseHttpFlow(&entry)
+
+	// search for flags in the flow items
+	applyFlagRegexTags(&entry, s.FlagRegex)
+
+	// queue the flow for insertion into the database
 	s.insertFlowEntry(&entry)
 }
 
-// parseAndTagHttp parses HTTP flows and decodes encodings to plaintext.
-func (s *Service) parseAndTagHttp(entry *db.FlowEntry) {
-	s.ParseHttpFlow(entry)
-}
-
-// applyFlagRegexTags applies regex-based tags to the flow entry.
-func (s *Service) applyFlagRegexTags(entry *db.FlowEntry) {
-	if s.FlagRegex == nil {
+// applyFlagRegexTags searches for flags in flow items using a regex pattern
+// and if found, adds them to the entry's tags and flags.
+//
+// This assumes the `Data` part of the flowItem is already pre-processed,
+// s.t. we can run regex tags over the payload directly.
+func applyFlagRegexTags(entry *db.FlowEntry, flagRegex *regexp.Regexp) {
+	if flagRegex == nil {
 		return
 	}
-	ApplyFlagTags(entry, *s.FlagRegex)
+
+	// for each flow item in the entry, search for flags using the regex
+	for idx := 0; idx < len(entry.Flow); idx++ {
+		flags, tags := searchForFlagsInItem(&entry.Flow[idx], flagRegex)
+
+		entry.Tags = append(entry.Tags, tags...)
+		entry.Flags = append(entry.Flags, flags...)
+	}
+}
+
+// searchForFlagsInItem returns flags and associated tags found in a flow item
+// using the provided regex. It returns empty slices if no flags are found.
+func searchForFlagsInItem(
+	item *db.FlowItem,
+	flagRegex *regexp.Regexp,
+) (flags []string, tags []string) {
+	matches := flagRegex.FindAllStringSubmatch(item.Data, -1)
+	if len(matches) == 0 {
+		return // No matches found, skip further processing
+	}
+
+	if item.From == "c" {
+		tags = append(tags, "flag-in")
+	} else {
+		tags = append(tags, "flag-out")
+	}
+
+	// Add the flags
+	for _, match := range matches {
+		var flag string
+		flag = match[0]
+		flags = appendUnique(flags, flag)
+	}
+	return
 }
 
 // insertFlowEntry inserts the processed flow entry into the database.
