@@ -249,6 +249,15 @@ func (s *Service) checkProcessedCount(fname string) int64 {
 	return 0 // file not found, return 0 to process all packets
 }
 
+// Context implements reassembly.AssemblerContext
+type Context struct {
+	CaptureInfo gopacket.CaptureInfo
+}
+
+func (c *Context) GetCaptureInfo() gopacket.CaptureInfo {
+	return c.CaptureInfo
+}
+
 // processPacket handles a single packet: skipping, defragmentation, protocol dispatch (TCP/UDP), and error handling.
 // Returns true if processing should stop.
 func (s *Service) processPacket(packet gopacket.Packet, fname string, nodefrag bool) bool {
