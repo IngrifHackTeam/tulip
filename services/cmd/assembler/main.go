@@ -242,13 +242,14 @@ func processPcapFile(ctx context.Context, service *assembler.Service, fullPath s
 		return
 	}
 
+	oldStats := service.GetStats()
 	processPcapReader(ctx, service, reader, fullPath)
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)
 
-	totPkts := newStats.Processed
-	totBytes := newStats.ProcessedBytes
+	totPkts := newStats.Processed - oldStats.Processed
+	totBytes := newStats.ProcessedBytes - oldStats.ProcessedBytes
 	pktsPerSec := (float64(totPkts) / elapsed.Seconds())
 	totBytesPerSec := float64(totBytes) / elapsed.Seconds()
 
