@@ -86,7 +86,7 @@ func makeTestAssembler(t *testing.T) *Service {
 		ConnectionTcpTimeout: 0,
 		ConnectionUdpTimeout: 0,
 	}
-	return NewAssemblerService(cfg)
+	return NewAssemblerService(t.Context(), cfg)
 }
 
 func TestHandlePcapUri_DoesNotCrashOnCorruptedOrPcapng(t *testing.T) {
@@ -109,7 +109,7 @@ func TestHandlePcapUri_DoesNotCrashOnCorruptedOrPcapng(t *testing.T) {
 					t.Errorf("HandlePcapUri panicked on %s: %v", tc.name, r)
 				}
 			}()
-			assembler.ProcessPcapPath(t.Context(), fname)
+			assembler.ProcessPcapPath(fname)
 		})
 	}
 }
@@ -360,7 +360,7 @@ func TestDefragPacket_FragmentedPacket(t *testing.T) {
 	serialized2 = append(serialized2, frag2Payload...)
 	packet2 := gopacket.NewPacket(serialized2, layers.LayerTypeIPv4, gopacket.Default)
 
-	assembler.Defragmenter = ip4defrag.NewIPv4Defragmenter()
+	assembler.defragmenter = ip4defrag.NewIPv4Defragmenter()
 
 	complete, err := assembler.defragPacket(packet1)
 	assert.False(t, complete, "should not be complete if fragment not reassembled")
@@ -392,7 +392,7 @@ func TestDefragPacket_DefragError_ReturnsError(t *testing.T) {
 	serialized = append(serialized, []byte{0xde, 0xad}...)
 	packet := gopacket.NewPacket(serialized, layers.LayerTypeIPv4, gopacket.Default)
 
-	assembler.Defragmenter = ip4defrag.NewIPv4Defragmenter()
+	assembler.defragmenter = ip4defrag.NewIPv4Defragmenter()
 
 	complete, err := assembler.defragPacket(packet)
 	assert.False(t, complete, "should not be complete if defrag error")
@@ -445,7 +445,7 @@ func TestDefragPacket_CompletePacket_DecodesNextLayer(t *testing.T) {
 	serialized := buf.Bytes()
 
 	packet := gopacket.NewPacket(serialized, layers.LayerTypeIPv4, gopacket.Default)
-	assembler.Defragmenter = ip4defrag.NewIPv4Defragmenter()
+	assembler.defragmenter = ip4defrag.NewIPv4Defragmenter()
 
 	complete, err := assembler.defragPacket(packet)
 	assert.True(t, complete, "should be complete after defrag")

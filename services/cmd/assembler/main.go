@@ -22,7 +22,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -30,7 +29,6 @@ import (
 	"tulip/pkg/db"
 
 	"github.com/lmittmann/tint"
-	"github.com/panjf2000/ants/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -98,7 +96,6 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	nonstrict := viper.GetBool("nonstrict")
 	connectionTimeoutStr := viper.GetString("connection-timeout")
 	pperf := viper.GetBool("pperf")
-	workers := viper.GetInt("workers")
 
 	if pperf {
 		go func() {
@@ -171,18 +168,13 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		ConnectionUdpTimeout: connectionTimeout,
 		FlagIdUrl:            flagIdUrl,
 	}
-	pool, err := ants.NewPoolWithFuncGeneric[string](workers, func(path string) {
-		processPcapFile(ctx, config, path)
-
-		if workers > 1 {
-			// force garbage collection
-			runtime.GC()
-		}
-	})
 
 	// Use polling for simplicity and reliability
 	pollInterval := 2 * time.Second
 	seen := make(map[string]struct{})
+
+	// create a new assembler service instance
+	service := assembler.NewAssemblerService(ctx, config)
 
 watchLoop:
 	for {
@@ -219,13 +211,13 @@ watchLoop:
 			seen[fullPath] = struct{}{}
 
 			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
-			pool.Invoke(fullPath)
+			processPcapFile(service, fullPath)
 		}
 		time.Sleep(pollInterval)
 	}
 }
 
-func processPcapFile(ctx context.Context, config assembler.Config, fullPath string) {
+func processPcapFile(service *assembler.Service, fullPath string) {
 	startTime := time.Now()
 
 	defer func() {
@@ -234,9 +226,7 @@ func processPcapFile(ctx context.Context, config assembler.Config, fullPath stri
 		}
 	}()
 
-	// create a new assembler service instance
-	service := assembler.NewAssemblerService(config)
-	service.ProcessPcapPath(ctx, fullPath)
+	service.ProcessPcapPath(fullPath)
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)

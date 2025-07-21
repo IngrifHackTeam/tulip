@@ -33,17 +33,19 @@ import (
 type Service struct {
 	Config
 
-	Defragmenter  *ip4defrag.IPv4Defragmenter
-	StreamFactory *TcpStreamFactory
-	StreamPool    *reassembly.StreamPool
+	defragmenter *ip4defrag.IPv4Defragmenter
 
-	AssemblerTcp *reassembly.Assembler
-	AssemblerUdp *UDPAssembler
+	tcpStreamFactory *TcpStreamFactory
+	tcpStreamPool    *reassembly.StreamPool
+	tcpAssembler     *reassembly.Assembler
 
-	toDb chan db.FlowEntry // Channel for processed flow entries
+	udpAssembler *UDPAssembler
 
-	stats Stats      // Statistics about processed packets, bytes, and flows
-	mu    sync.Mutex // Mutex to protect stats updates
+	toDbCh chan db.FlowEntry // Channel for processed flow entries
+
+	ctx   context.Context // Context for cancellation
+	stats Stats           // Statistics about processed packets, bytes, and flows
+	mu    sync.Mutex      // Mutex to protect stats updates
 }
 
 type Stats struct {
@@ -66,28 +68,33 @@ type Config struct {
 	FlagIdUrl string // URL del servizio flagid
 }
 
-func NewAssemblerService(opts Config) *Service {
-	streamFactory := &TcpStreamFactory{
-		nonStrict: opts.NonStrict,
-	}
+func NewAssemblerService(ctx context.Context, opts Config) *Service {
+	var (
+		tcpStreamFactory = &TcpStreamFactory{nonStrict: opts.NonStrict}
+		tcpStreamPool    = reassembly.NewStreamPool(tcpStreamFactory)
+		tcpAssembler     = reassembly.NewAssembler(tcpStreamPool)
+	)
 
-	streamPool := reassembly.NewStreamPool(streamFactory)
-	assemblerUdp := NewUDPAssembler()
+	udpAssembler := NewUDPAssembler()
 
 	srv := &Service{
-		Defragmenter:  ip4defrag.NewIPv4Defragmenter(),
-		StreamFactory: streamFactory,
-		StreamPool:    streamPool,
+		Config: opts,
 
-		AssemblerTcp: reassembly.NewAssembler(streamPool),
-		AssemblerUdp: assemblerUdp,
+		defragmenter: ip4defrag.NewIPv4Defragmenter(),
 
-		toDb: make(chan db.FlowEntry),
+		tcpStreamFactory: tcpStreamFactory,
+		tcpStreamPool:    tcpStreamPool,
+		tcpAssembler:     tcpAssembler,
+
+		udpAssembler: udpAssembler,
+
+		toDbCh: make(chan db.FlowEntry),
+
+		ctx: ctx,
 	}
-	srv.Config = opts
 
 	onComplete := func(fe db.FlowEntry) { srv.reassemblyCallback(fe) }
-	srv.StreamFactory.OnComplete = onComplete
+	srv.tcpStreamFactory.OnComplete = onComplete
 
 	go srv.handleInsertionQueue()
 
@@ -102,10 +109,7 @@ func (s *Service) GetStats() Stats {
 }
 
 // ProcessPcapPath processes a PCAP file from a given URI.
-func (s *Service) ProcessPcapPath(
-	ctx context.Context,
-	fname string,
-) error {
+func (s *Service) ProcessPcapPath(fname string) error {
 	file, err := os.Open(fname)
 	if err != nil {
 		return fmt.Errorf("failed to open PCAP file %s: %w", fname, err)
@@ -117,15 +121,11 @@ func (s *Service) ProcessPcapPath(
 		return fmt.Errorf("failed to create PCAP reader for %s: %w", fname, err)
 	}
 
-	return s.ProcessPcapReader(ctx, reader, fname)
+	return s.ProcessPcapReader(reader, fname)
 }
 
 // ProcessPcapReader processes packets from a pcapgo.Reader.
-func (s *Service) ProcessPcapReader(
-	ctx context.Context,
-	handle *pcapgo.Reader,
-	fname string,
-) error {
+func (s *Service) ProcessPcapReader(handle *pcapgo.Reader, fname string) error {
 	var source *gopacket.PacketSource
 
 	linkType := handle.LinkType()
@@ -139,14 +139,10 @@ func (s *Service) ProcessPcapReader(
 	source.Lazy = s.TcpLazy
 	source.NoCopy = true
 
-	return s.processPacketSrc(ctx, source, fname)
+	return s.processPacketSrc(source, fname)
 }
 
-func (s *Service) processPacketSrc(
-	ctx context.Context,
-	src *gopacket.PacketSource,
-	fname string,
-) error {
+func (s *Service) processPacketSrc(src *gopacket.PacketSource, fname string) error {
 
 	var (
 		bytes     int64 = 0     // Total bytes processed
@@ -155,7 +151,7 @@ func (s *Service) processPacketSrc(
 	)
 
 	toBeSkipped := s.checkProcessedCount(fname)
-	slog.DebugContext(ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", fname)
+	slog.DebugContext(s.ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", fname)
 
 	defer func() {
 		// Update stats and database entry after processing
@@ -180,10 +176,10 @@ func (s *Service) processPacketSrc(
 
 	for packet := range src.Packets() {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			slog.Warn("context cancelled, stopping packet processing", "file", fname)
 			finished = false
-			return ctx.Err()
+			return s.ctx.Err()
 		default:
 		}
 
@@ -220,8 +216,8 @@ func (s *Service) FlushConnections() {
 	flushed, closed, discarded := 0, 0, 0
 
 	if s.ConnectionTcpTimeout != 0 {
-		flushed, closed = s.AssemblerTcp.FlushCloseOlderThan(thresholdTcp)
-		discarded = s.Defragmenter.DiscardOlderThan(thresholdTcp)
+		flushed, closed = s.tcpAssembler.FlushCloseOlderThan(thresholdTcp)
+		discarded = s.defragmenter.DiscardOlderThan(thresholdTcp)
 	}
 
 	if flushed != 0 || closed != 0 || discarded != 0 {
@@ -229,7 +225,7 @@ func (s *Service) FlushConnections() {
 	}
 
 	if s.ConnectionUdpTimeout != 0 {
-		udpFlows := s.AssemblerUdp.CompleteOlderThan(thresholdUdp)
+		udpFlows := s.udpAssembler.CompleteOlderThan(thresholdUdp)
 		for _, flow := range udpFlows {
 			s.reassemblyCallback(*flow)
 		}
@@ -261,7 +257,7 @@ func (c *Context) GetCaptureInfo() gopacket.CaptureInfo { return c.CaptureInfo }
 // Returns true if processing should stop.
 func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag bool) (stop bool) {
 
-	// defrag the packet
+	// defrag the packet, sequentially
 	if !noDefrag {
 		complete, err := s.defragPacket(packet)
 		if err != nil {
@@ -281,9 +277,9 @@ func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag b
 
 	switch transport.LayerType() {
 	case layers.LayerTypeTCP:
-		s.AssemblerTcp.AssembleWithContext(flow, transport.(*layers.TCP), context)
+		s.tcpAssembler.AssembleWithContext(flow, transport.(*layers.TCP), context)
 	case layers.LayerTypeUDP:
-		s.AssemblerUdp.AssembleWithContext(flow, transport.(*layers.UDP), context)
+		s.udpAssembler.AssembleWithContext(flow, transport.(*layers.UDP), context)
 	default:
 		slog.Warn("Unsupported transport layer", "layer", transport.LayerType().String(), "file", fname)
 	}
@@ -305,7 +301,7 @@ func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 	ip4 := ip4Layer.(*layers.IPv4)
 	oldLen := ip4.Length
 
-	newip4, defragErr := s.Defragmenter.DefragIPv4(ip4)
+	newip4, defragErr := s.defragmenter.DefragIPv4(ip4)
 	if defragErr != nil {
 		slog.Error("Error while de-fragmenting", "err", defragErr)
 		return false, defragErr // stop processing due to error
@@ -352,7 +348,7 @@ func (s *Service) reassemblyCallback(entry db.FlowEntry) {
 	applyFlagRegexTags(&entry, s.FlagRegex)
 
 	// queue the flow for insertion into the database
-	s.toDb <- entry
+	s.toDbCh <- entry
 }
 
 // applyFlagRegexTags searches for flags in flow items using a regex pattern
@@ -436,7 +432,13 @@ func (s *Service) handleInsertionQueue() {
 
 	for {
 		select {
-		case entry := <-s.toDb:
+		case <-s.ctx.Done():
+			slog.Info("context cancelled, stopping insertion queue")
+			if len(queue) > 0 {
+				s.insertFlows(queue)
+			}
+			return
+		case entry := <-s.toDbCh:
 			// Add the entry to the queue
 			queue = append(queue, entry)
 			if len(queue) >= queueSize {
