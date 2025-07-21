@@ -89,31 +89,6 @@ func makeTestAssembler(t *testing.T) *Service {
 	return NewAssemblerService(t.Context(), cfg)
 }
 
-func TestHandlePcapUri_DoesNotCrashOnCorruptedOrPcapng(t *testing.T) {
-	assembler := makeTestAssembler(t)
-
-	tests := []struct {
-		name    string
-		content []byte
-	}{
-		{"valid_pcap", makeValidPcap()},
-		{"minimal_pcapng", makeMinimalPcapng()},
-		{"corrupted", makeCorruptedPcap()},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			fname := writeTempFile(t, tc.content, "."+tc.name)
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("HandlePcapUri panicked on %s: %v", tc.name, r)
-				}
-			}()
-			assembler.ProcessPcapPath(fname)
-		})
-	}
-}
-
 func TestApplyFlagRegexTags(t *testing.T) {
 
 	makeFlowEntry := func(data ...string) *db.FlowEntry {

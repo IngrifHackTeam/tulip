@@ -16,7 +16,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,7 +25,6 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/ip4defrag"
 	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcapgo"
 	"github.com/google/gopacket/reassembly"
 )
 
@@ -108,50 +106,15 @@ func (s *Service) GetStats() Stats {
 	return s.stats
 }
 
-// ProcessPcapPath processes a PCAP file from a given URI.
-func (s *Service) ProcessPcapPath(fname string) error {
-	file, err := os.Open(fname)
-	if err != nil {
-		return fmt.Errorf("failed to open PCAP file %s: %w", fname, err)
-	}
-	defer file.Close()
-
-	reader, err := pcapgo.NewReader(file)
-	if err != nil {
-		return fmt.Errorf("failed to create PCAP reader for %s: %w", fname, err)
-	}
-
-	return s.ProcessPcapReader(reader, fname)
-}
-
-// ProcessPcapReader processes packets from a pcapgo.Reader.
-func (s *Service) ProcessPcapReader(handle *pcapgo.Reader, fname string) error {
-	var source *gopacket.PacketSource
-
-	linkType := handle.LinkType()
-	switch linkType {
-	case layers.LinkTypeIPv4:
-		source = gopacket.NewPacketSource(handle, layers.LayerTypeIPv4)
-	default:
-		source = gopacket.NewPacketSource(handle, linkType)
-	}
-
-	source.Lazy = s.TcpLazy
-	source.NoCopy = true
-
-	return s.processPacketSrc(source, fname)
-}
-
-func (s *Service) processPacketSrc(src *gopacket.PacketSource, fname string) error {
-
+func (s *Service) ProcessPacketSrc(src *gopacket.PacketSource, sourceName string) error {
 	var (
 		bytes     int64 = 0     // Total bytes processed
 		processed int64 = 0     // Total packets processed
 		finished  bool  = false // Whether we consumed all packets
 	)
 
-	toBeSkipped := s.checkProcessedCount(fname)
-	slog.DebugContext(s.ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", fname)
+	toBeSkipped := s.checkProcessedCount(sourceName)
+	slog.DebugContext(s.ctx, "assembler: skipping packets", "toBeSkipped", toBeSkipped, "file", sourceName)
 
 	defer func() {
 		// Update stats and database entry after processing
@@ -163,13 +126,11 @@ func (s *Service) processPacketSrc(src *gopacket.PacketSource, fname string) err
 		s.mu.Unlock()
 
 		s.DB.InsertPcap(db.PcapFile{
-			FileName: fname,
+			FileName: sourceName,
 			Position: toBeSkipped + processed,
 			Finished: finished,
 		})
 	}()
-
-	s.FlushConnections()
 
 	nodefrag := false
 	lastFlush := time.Now()
@@ -177,7 +138,7 @@ func (s *Service) processPacketSrc(src *gopacket.PacketSource, fname string) err
 	for packet := range src.Packets() {
 		select {
 		case <-s.ctx.Done():
-			slog.Warn("context cancelled, stopping packet processing", "file", fname)
+			slog.Warn("context cancelled, stopping packet processing", "file", sourceName)
 			finished = false
 			return s.ctx.Err()
 		default:
@@ -193,20 +154,33 @@ func (s *Service) processPacketSrc(src *gopacket.PacketSource, fname string) err
 
 		data := packet.Data()
 		bytes += int64(len(data))
-		shouldStop := s.processPacket(packet, fname, nodefrag)
+		shouldStop := s.processPacket(packet, sourceName, nodefrag)
 		if shouldStop {
 			finished = false
-			return fmt.Errorf("processPacket returned true, stopping processing for %s", fname)
+			return fmt.Errorf("processPacket returned true, stopping processing for %s", sourceName)
 		}
 
-		if s.shouldFlushConnections(lastFlush) {
-			s.FlushConnections()
-			lastFlush = time.Now()
-		}
+		// TODO: this is not thread-safe, but we can't lock a mutex every time we process a packet!
+		lastFlush = s.flushIfNeeded(lastFlush)
 	}
 
 	finished = true
 	return nil
+}
+
+// flushIfNeeded calls FlushConnections if the current time exceeds the last flush time
+// by the configured FlushInterval and returns the new last flush time.
+func (s *Service) flushIfNeeded(lastFlush time.Time) time.Time {
+	if s.FlushInterval == 0 || lastFlush.Add(s.FlushInterval).Unix() >= time.Now().Unix() {
+		return lastFlush
+	}
+	s.FlushConnections()
+	return time.Now()
+}
+
+// shouldFlushConnections determines if it's time to flush connections based on the interval.
+func (s *Service) shouldFlushConnections(lastFlush time.Time) bool {
+	return s.FlushInterval != 0 && lastFlush.Add(s.FlushInterval).Unix() < time.Now().Unix()
 }
 
 // FlushConnections closes and saves connections that are older than the configured timeouts.
@@ -330,11 +304,6 @@ func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 	return true, nil
 }
 
-// shouldFlushConnections determines if it's time to flush connections based on the interval.
-func (s *Service) shouldFlushConnections(lastFlush time.Time) bool {
-	return s.FlushInterval != 0 && lastFlush.Add(s.FlushInterval).Unix() < time.Now().Unix()
-}
-
 // reassemblyCallback is called when a flow is completed.
 func (s *Service) reassemblyCallback(entry db.FlowEntry) {
 	// we first try to parse it as HTTP to decompress the body if
@@ -433,10 +402,7 @@ func (s *Service) handleInsertionQueue() {
 	for {
 		select {
 		case <-s.ctx.Done():
-			slog.Info("context cancelled, stopping insertion queue")
-			if len(queue) > 0 {
-				s.insertFlows(queue)
-			}
+			slog.Info("context cancelled, stopping insertion queue and dropping remaining flows")
 			return
 		case entry := <-s.toDbCh:
 			// Add the entry to the queue

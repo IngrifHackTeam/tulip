@@ -28,6 +28,9 @@ import (
 	"tulip/pkg/assembler"
 	"tulip/pkg/db"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
 	"github.com/lmittmann/tint"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -226,7 +229,20 @@ func processPcapFile(service *assembler.Service, fullPath string) {
 		}
 	}()
 
-	service.ProcessPcapPath(fullPath)
+	file, err := os.Open(fullPath)
+	if err != nil {
+		slog.Error("Failed to open PCAP file", slog.Any("err", err), slog.String("file", fullPath))
+		return
+	}
+	defer file.Close()
+
+	reader, err := pcapgo.NewReader(file)
+	if err != nil {
+		slog.Error("Failed to create PCAP reader", slog.Any("err", err), slog.String("file", fullPath))
+		return
+	}
+
+	processPcapReader(service, reader, fullPath)
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)
@@ -243,8 +259,25 @@ func processPcapFile(service *assembler.Service, fullPath string) {
 		"pps", pktsPerSec,
 		"MB_per_sec", totBytesPerSec/(1024*1024),
 	)
+}
 
-	service = nil // help GC
+// processPcapReader creates a gopacket PacketSource from a pcapgo.Reader and processes
+// packets using the assembler service.
+func processPcapReader(s *assembler.Service, handle *pcapgo.Reader, fname string) error {
+	var source *gopacket.PacketSource
+
+	linkType := handle.LinkType()
+	switch linkType {
+	case layers.LinkTypeIPv4:
+		source = gopacket.NewPacketSource(handle, layers.LayerTypeIPv4)
+	default:
+		source = gopacket.NewPacketSource(handle, linkType)
+	}
+
+	source.Lazy = s.TcpLazy
+	source.NoCopy = true
+
+	return s.ProcessPacketSrc(source, fname)
 }
 
 func main() {
