@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"tulip/pkg/db"
 
 	"github.com/lmittmann/tint"
+	"github.com/panjf2000/ants/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -53,6 +55,7 @@ func init() {
 	rootCmd.Flags().String("connection-timeout", "30s", "Connection timeout for both TCP and UDP flows (e.g. 30s, 1m)")
 	rootCmd.Flags().Bool("pperf", false, "Enable performance profiling (experimental)")
 	rootCmd.Flags().Bool("verbose", false, "Enable verbose logging")
+	rootCmd.Flags().Int("workers", 2, "Number of worker threads to use for processing PCAP files")
 
 	viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
 	viper.BindPFlag("watch-dir", rootCmd.Flags().Lookup("watch-dir"))
@@ -64,6 +67,7 @@ func init() {
 	viper.BindPFlag("connection-timeout", rootCmd.Flags().Lookup("connection-timeout"))
 	viper.BindPFlag("pperf", rootCmd.Flags().Lookup("pperf"))
 	viper.BindPFlag("verbose", rootCmd.Flags().Lookup("verbose"))
+	viper.BindPFlag("workers", rootCmd.Flags().Lookup("workers"))
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -94,6 +98,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	nonstrict := viper.GetBool("nonstrict")
 	connectionTimeoutStr := viper.GetString("connection-timeout")
 	pperf := viper.GetBool("pperf")
+	workers := viper.GetInt("workers")
 
 	if pperf {
 		go func() {
@@ -166,10 +171,14 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		ConnectionUdpTimeout: connectionTimeout,
 		FlagIdUrl:            flagIdUrl,
 	}
-	service := assembler.NewAssemblerService(config)
+	pool, err := ants.NewPoolWithFuncGeneric[string](workers, func(path string) {
+		processPcapFile(ctx, config, path)
 
-	// Watch directory for new PCAP files and ingest them
-	slog.Info("Watching directory for new PCAP files", slog.String("dir", watchDir))
+		if workers > 1 {
+			// force garbage collection
+			runtime.GC()
+		}
+	})
 
 	// Use polling for simplicity and reliability
 	pollInterval := 2 * time.Second
@@ -210,29 +219,30 @@ watchLoop:
 			seen[fullPath] = struct{}{}
 
 			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
-
-			processPcapFile(ctx, service, fullPath)
+			pool.Invoke(fullPath)
 		}
 		time.Sleep(pollInterval)
 	}
 }
 
-func processPcapFile(ctx context.Context, service *assembler.Service, fullPath string) {
+func processPcapFile(ctx context.Context, config assembler.Config, fullPath string) {
+	startTime := time.Now()
+
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Recovered from panic in ProcessPcapHandle", "error", r, "file", fullPath)
 		}
 	}()
 
-	startTime := time.Now()
-	oldStats := service.GetStats()
+	// create a new assembler service instance
+	service := assembler.NewAssemblerService(config)
 	service.ProcessPcapPath(ctx, fullPath)
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)
 
-	totPkts := newStats.Processed - oldStats.Processed
-	totBytes := newStats.ProcessedBytes - oldStats.ProcessedBytes
+	totPkts := newStats.Processed
+	totBytes := newStats.ProcessedBytes
 	pktsPerSec := (float64(totPkts) / elapsed.Seconds())
 	totBytesPerSec := float64(totBytes) / elapsed.Seconds()
 
@@ -243,6 +253,8 @@ func processPcapFile(ctx context.Context, service *assembler.Service, fullPath s
 		"pps", pktsPerSec,
 		"MB_per_sec", totBytesPerSec/(1024*1024),
 	)
+
+	service = nil // help GC
 }
 
 func main() {

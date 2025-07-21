@@ -251,60 +251,87 @@ func (s *Service) checkProcessedCount(fname string) int64 {
 
 // Context implements reassembly.AssemblerContext
 type Context struct {
-	CaptureInfo gopacket.CaptureInfo
+	gopacket.CaptureInfo
+	FileName string // FileName is the name of the file being processed
 }
 
-func (c *Context) GetCaptureInfo() gopacket.CaptureInfo {
-	return c.CaptureInfo
-}
+func (c *Context) GetCaptureInfo() gopacket.CaptureInfo { return c.CaptureInfo }
 
 // processPacket handles a single packet: skipping, defragmentation, protocol dispatch (TCP/UDP), and error handling.
 // Returns true if processing should stop.
-func (s *Service) processPacket(packet gopacket.Packet, fname string, nodefrag bool) bool {
-	// defrag the IPv4 packet if required
-	ip4Layer := packet.Layer(layers.LayerTypeIPv4)
-	if !nodefrag && ip4Layer != nil {
-		ip4 := ip4Layer.(*layers.IPv4)
-		l := ip4.Length
-		newip4, err := s.Defragmenter.DefragIPv4(ip4)
+func (s *Service) processPacket(packet gopacket.Packet, fname string, noDefrag bool) (stop bool) {
+
+	// defrag the packet
+	if !noDefrag {
+		complete, err := s.defragPacket(packet)
 		if err != nil {
-			slog.Error("Error while de-fragmenting", "err", err)
-			return true
-		} else if newip4 == nil {
-			return false // packet fragment, we don't have whole packet yet.
-		}
-		if newip4.Length != l {
-			pb, ok := packet.(gopacket.PacketBuilder)
-			if !ok {
-				panic("Not a PacketBuilder")
-			}
-			nextDecoder := newip4.NextLayerType()
-			nextDecoder.Decode(newip4.Payload, pb)
+			return true // stop processing due to error
+		} else if !complete {
+			return false // wait for more fragments
 		}
 	}
 
 	transport := packet.TransportLayer()
 	if transport == nil {
-		return false
+		return false // skip packet
 	}
+
+	flow := packet.NetworkLayer().NetworkFlow()
+	context := &Context{packet.Metadata().CaptureInfo, fname}
 
 	switch transport.LayerType() {
 	case layers.LayerTypeTCP:
-		tcp := transport.(*layers.TCP)
-		flow := packet.NetworkLayer().NetworkFlow()
-		captureInfo := packet.Metadata().CaptureInfo
-		captureInfo.AncillaryData = []any{fname}
-		context := &Context{CaptureInfo: captureInfo}
-		s.AssemblerTcp.AssembleWithContext(flow, tcp, context)
+		s.AssemblerTcp.AssembleWithContext(flow, transport.(*layers.TCP), context)
 	case layers.LayerTypeUDP:
-		udp := transport.(*layers.UDP)
-		flow := packet.NetworkLayer().NetworkFlow()
-		captureInfo := packet.Metadata().CaptureInfo
-		s.AssemblerUdp.Assemble(flow, udp, &captureInfo, fname)
+		s.AssemblerUdp.AssembleWithContext(flow, transport.(*layers.UDP), context)
 	default:
 		slog.Warn("Unsupported transport layer", "layer", transport.LayerType().String(), "file", fname)
 	}
-	return false
+
+	return false // continue processing packets
+}
+
+// defragPacket attempts to defragment an IPv4 packet.
+//
+// Returns true if the packet is complete, false if it is still a fragment,
+// and an error if defragmentation fails.
+// If the packet is successfully defragmented, it decodes the next protocol layer.
+func (s *Service) defragPacket(packet gopacket.Packet) (complete bool, err error) {
+	ip4Layer := packet.Layer(layers.LayerTypeIPv4)
+	if ip4Layer == nil {
+		return true, nil // No IPv4 layer found, nothing to defragment
+	}
+
+	ip4 := ip4Layer.(*layers.IPv4)
+	oldLen := ip4.Length
+
+	newip4, defragErr := s.Defragmenter.DefragIPv4(ip4)
+	if defragErr != nil {
+		slog.Error("Error while de-fragmenting", "err", defragErr)
+		return false, defragErr // stop processing due to error
+	} else if newip4 == nil {
+		// packet fragment, we don't have whole packet yet.
+		return false, nil // wait for more fragments
+	}
+
+	// If the length of the IPv4 packet has changed after defragmentation,
+	// it means we now have a complete packet with a potentially new payload.
+	// We need to decode the next protocol layer (e.g., TCP, UDP) from this payload.
+	if newip4.Length != oldLen {
+		// Attempt to cast the packet to a PacketBuilder, which is required
+		// for decoding the next protocol layer.
+		pb, ok := packet.(gopacket.PacketBuilder)
+		if !ok {
+			// Panic if the packet does not implement PacketBuilder.
+			// This should not happen in normal operation.
+			panic("Packet does not implement gopacket.PacketBuilder, cannot decode next layer")
+		}
+		// Decode the next layer using the new payload.
+		nextDecoder := newip4.NextLayerType()
+		nextDecoder.Decode(newip4.Payload, pb)
+	}
+
+	return true, nil
 }
 
 // shouldFlushConnections determines if it's time to flush connections based on the interval.
@@ -312,7 +339,7 @@ func (s *Service) shouldFlushConnections(lastFlush time.Time) bool {
 	return s.FlushInterval != 0 && lastFlush.Add(s.FlushInterval).Unix() < time.Now().Unix()
 }
 
-// TODO; FIXME; RDJ; this is kinda gross, but this is PoC level code
+// reassemblyCallback is called when a flow is completed.
 func (s *Service) reassemblyCallback(entry db.FlowEntry) {
 	// we first try to parse it as HTTP to decompress the body if
 	// it was compressed with gzip or similar.

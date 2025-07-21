@@ -12,68 +12,88 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/reassembly"
 )
 
+// UdpStreamId uniquely identifies a bidirectional UDP stream
+// based on the endpoints and ports involved in the communication.
+type UdpStreamId struct {
+	EndpointLower uint64
+	EndpointUpper uint64
+	PortLower     uint16
+	PortUpper     uint16
+}
+
+// NewUdpStreamId generates a unique identifier for a UDP stream based on its endpoints and ports.
+// The arguments can be in any order, and the function ensures that the identifiers are always ordered
+// such that EndpointLower < EndpointUpper and PortLower < PortUpper.
+func NewUdpStreamId(e1, e2 gopacket.Endpoint, p1, p2 layers.UDPPort) UdpStreamId {
+	h1, h2 := e1.FastHash(), e2.FastHash()
+
+	pn1, pn2 := uint16(p1), uint16(p2)
+
+	id := UdpStreamId{}
+
+	if h1 > h2 {
+		id.EndpointLower = h2
+		id.EndpointUpper = h1
+	} else {
+		id.EndpointLower = h1
+		id.EndpointUpper = h2
+	}
+
+	if pn1 > pn2 {
+		id.PortLower = pn2
+		id.PortUpper = pn1
+	} else {
+		id.PortLower = pn1
+		id.PortUpper = pn2
+	}
+	return id
+}
+
 // UDPAssembler is responsible for assembling UDP streams from packets.
+//
+// It tries to adhere to the same interface as TCPAssembler, allowing it to be used in a similar way.
+// It maintains a map of active UDP streams, identified by their endpoints and ports.
 type UDPAssembler struct {
-	streams map[UdpStreamIdendifier]*UdpStream
+	streams map[UdpStreamId]*UdpStream
 }
 
 func NewUDPAssembler() *UDPAssembler {
 	return &UDPAssembler{
-		streams: map[UdpStreamIdendifier]*UdpStream{},
+		streams: map[UdpStreamId]*UdpStream{},
 	}
 }
 
-func (a *UDPAssembler) Assemble(
-	flow gopacket.Flow,
-	udp *layers.UDP,
-	captureInfo *gopacket.CaptureInfo,
-	source string,
-) *UdpStream {
-	id := flowToUdpStreamId(flow, udp)
-
+func (a *UDPAssembler) getOrCreateUdpStream(id UdpStreamId) *UdpStream {
 	// get or create the stream
 	stream, ok := a.streams[id]
 	if !ok {
-		stream = &UdpStream{
-			Identifier: id,
-			Flow:       flow,
-			PortSrc:    udp.SrcPort,
-			PortDst:    udp.DstPort,
-			Source:     source,
-		}
-
+		stream = &UdpStream{Items: make([]db.FlowItem, 0)}
 		a.streams[id] = stream
 	}
-
-	stream.processSegment(flow, udp, captureInfo)
 	return stream
 }
 
-func flowToUdpStreamId(flow gopacket.Flow, udp *layers.UDP) UdpStreamIdendifier {
-	endpointSrc := flow.Src().FastHash()
-	endpointDst := flow.Dst().FastHash()
-	portSrc := uint16(udp.SrcPort)
-	portDst := uint16(udp.DstPort)
-	id := UdpStreamIdendifier{}
-
-	if endpointSrc > endpointDst {
-		id.EndpointLower = endpointDst
-		id.EndpointUpper = endpointSrc
-	} else {
-		id.EndpointLower = endpointSrc
-		id.EndpointUpper = endpointDst
+func (a *UDPAssembler) AssembleWithContext(
+	netFlow gopacket.Flow,
+	u *layers.UDP,
+	ac reassembly.AssemblerContext,
+) *UdpStream {
+	// cast to our context type
+	context, ok := ac.(*Context)
+	if !ok {
+		panic("TcpStreamFactory: AssemblerContext is not of type *assembler.Context")
 	}
 
-	if portSrc > portDst {
-		id.PortLower = portDst
-		id.PortUpper = portSrc
-	} else {
-		id.PortLower = portSrc
-		id.PortUpper = portDst
-	}
-	return id
+	id := NewUdpStreamId(netFlow.Src(), netFlow.Dst(), u.SrcPort, u.DstPort)
+
+	// get or create the stream
+	stream := a.getOrCreateUdpStream(id)
+
+	stream.processSegment(netFlow, u, context)
+	return stream
 }
 
 func (a *UDPAssembler) CompleteOlderThan(threshold time.Time) []*db.FlowEntry {
@@ -100,13 +120,11 @@ func completeReassembly(stream *UdpStream) *db.FlowEntry {
 	startTime := firstPkt.Time
 	duration := lastPkt.Time - startTime
 
-	src, dst := stream.Flow.Endpoints()
-
 	return &db.FlowEntry{
-		SrcPort:      int(stream.PortSrc),
-		DstPort:      int(stream.PortDst),
-		SrcIp:        src.String(),
-		DstIp:        dst.String(),
+		SrcIp:        stream.netSrc.String(),
+		DstIp:        stream.netDst.String(),
+		SrcPort:      int(stream.portSrc),
+		DstPort:      int(stream.portDst),
 		Time:         startTime,
 		Duration:     duration,
 		Num_packets:  int(stream.PacketCount),
@@ -122,32 +140,37 @@ func completeReassembly(stream *UdpStream) *db.FlowEntry {
 	}
 }
 
-type UdpStreamIdendifier struct {
-	EndpointLower uint64
-	EndpointUpper uint64
-	PortLower     uint16
-	PortUpper     uint16
-}
-
+// UdpStream represents a sequence of UDP packets between two endpoints,
+// identified by their endpoints and ports.
 type UdpStream struct {
-	Identifier  UdpStreamIdendifier
-	Flow        gopacket.Flow
-	PacketCount uint
-	PacketSize  uint
-	Items       []db.FlowItem
-	PortSrc     layers.UDPPort
-	PortDst     layers.UDPPort
-	Source      string
-	LastSeen    time.Time
+	netSrc  gopacket.Endpoint // Network layer source endpoint (IP) of the first packet in the stream
+	netDst  gopacket.Endpoint // Network layer destination endpoint (IP) of the first packet in the stream
+	portSrc layers.UDPPort    // Source port of the UDP stream
+	portDst layers.UDPPort    // Destination port of the UDP stream
+
+	PacketCount uint      // Number of packets in the stream
+	PacketSize  uint      // Total size of the packets in the stream
+	Source      string    // Source of the stream, e.g., filename or network interface
+	LastSeen    time.Time // Timestamp of the last packet seen in the stream
+
+	Items []db.FlowItem // Items in the stream, containing payload and metadata
 }
 
-func (stream *UdpStream) processSegment(flow gopacket.Flow, udp *layers.UDP, captureInfo *gopacket.CaptureInfo) {
+func (stream *UdpStream) Id() UdpStreamId {
+	return NewUdpStreamId(stream.netSrc, stream.netDst, stream.portSrc, stream.portDst)
+}
+
+func (stream *UdpStream) processSegment(
+	flow gopacket.Flow,
+	udp *layers.UDP,
+	captureInfo *Context,
+) {
 	if len(udp.Payload) == 0 {
-		return
+		return // skip empty segments
 	}
 
 	from := "s"
-	if flow.Dst().FastHash() == stream.Flow.Src().FastHash() {
+	if flow.Dst().FastHash() == stream.netSrc.FastHash() {
 		from = "c"
 	}
 

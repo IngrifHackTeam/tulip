@@ -47,8 +47,13 @@ func (f *TcpStreamFactory) New(
 	ac reassembly.AssemblerContext,
 ) reassembly.Stream {
 
-	// fname was put here by the assembler
-	source := ac.GetCaptureInfo().AncillaryData[0].(string)
+	// cast to our context type
+	context, ok := ac.(*Context)
+	if !ok {
+		panic("TcpStreamFactory: AssemblerContext is not of type *assembler.Context")
+	}
+
+	fname := context.FileName
 
 	fsmOptions := reassembly.TCPSimpleFSMOptions{
 		SupportMissingEstablishment: f.nonStrict,
@@ -62,7 +67,7 @@ func (f *TcpStreamFactory) New(
 		transport: transport,
 
 		optChecker: reassembly.NewTCPOptionCheck(),
-		source:     source,
+		source:     fname,
 		flowItems:  []db.FlowItem{},
 		srcPort:    tcp.SrcPort,
 		dstPort:    tcp.DstPort,
