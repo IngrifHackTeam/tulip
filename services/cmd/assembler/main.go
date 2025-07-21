@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -253,13 +254,18 @@ func processPcapFile(ctx context.Context, service *assembler.Service, fullPath s
 	pktsPerSec := (float64(totPkts) / elapsed.Seconds())
 	totBytesPerSec := float64(totBytes) / elapsed.Seconds()
 
-	slog.Info("Processed PCAP file", slog.String("file", fullPath),
-		"elapsed_ms", elapsed.Milliseconds(),
-		"packets", totPkts,
-		"bytes", totBytes,
-		"pps", pktsPerSec,
-		"MB_per_sec", totBytesPerSec/(1024*1024),
-	)
+	if totPkts == 0 {
+		slog.Info("No packets processed", "path", fullPath)
+	} else {
+		slog.Info("Processed PCAP file",
+			"path", fullPath,
+			"elapsed_ms", elapsed.Milliseconds(),
+			"packets", totPkts,
+			"bytes", totBytes,
+			"pps", fmt.Sprintf("%.2f", pktsPerSec),
+			"MB_per_sec", fmt.Sprintf("%.2f", totBytesPerSec/1e6),
+		)
+	}
 }
 
 // processPcapReader creates a gopacket PacketSource from a pcapgo.Reader and processes

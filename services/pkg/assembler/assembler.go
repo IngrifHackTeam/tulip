@@ -85,6 +85,10 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 		tcpAssembler     = reassembly.NewAssembler(tcpStreamPool)
 	)
 
+	if opts.FlushInterval <= 0 {
+		opts.FlushInterval = 5 * time.Second // Default flush interval if not set
+	}
+
 	udpAssembler := NewUDPAssembler()
 
 	srv := &Service{
@@ -123,7 +127,8 @@ func (a *Service) GetStats() Stats {
 func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSource, sourceName string) error {
 	var (
 		bytes     int64 = 0     // Total bytes processed
-		processed int64 = 0     // Total packets processed
+		position  int64 = 0     // Total packets processed, including skipped
+		processed int64 = 0     // Packets processed after skipping
 		finished  bool  = false // Whether we consumed all packets
 	)
 
@@ -139,9 +144,15 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 		a.stats.ProcessedBytes += bytes
 		a.mu.Unlock()
 
+		slog.Debug("assembler: updating database entry",
+			"file", sourceName,
+			"position", position,
+			"finished", finished,
+		)
+
 		a.DB.InsertPcap(db.PcapFile{
 			FileName: sourceName,
-			Position: toBeSkipped + processed,
+			Position: position,
 			Finished: finished,
 		})
 	}()
@@ -159,15 +170,14 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 		default:
 		}
 
-		// skip until toBeSkipped is 0
-		if toBeSkipped >= 0 {
-			toBeSkipped--
+		position++
+		if position <= toBeSkipped {
 			continue
 		}
 
-		processed++
-
 		data := packet.Data()
+
+		processed++
 		bytes += int64(len(data))
 		shouldStop := a.processPacket(packet, sourceName, nodefrag)
 		if shouldStop {
@@ -175,6 +185,17 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 			return fmt.Errorf("processPacket returned true, stopping processing for %s", sourceName)
 		}
 	}
+
+	if position < toBeSkipped {
+		panic(fmt.Sprintf("assembler: position %d is less than toBeSkipped %d for file %s", position, toBeSkipped, sourceName))
+	}
+
+	slog.Debug("assembler: finished processing packets",
+		"file", sourceName,
+		"processed", processed,
+		"bytes", bytes,
+		"finished", finished,
+	)
 
 	finished = true
 	return nil

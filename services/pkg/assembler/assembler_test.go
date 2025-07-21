@@ -82,7 +82,6 @@ func makeTestAssembler(t *testing.T) *Service {
 		Experimental:         false,
 		NonStrict:            false,
 		FlagRegex:            nil,
-		FlushInterval:        0,
 		ConnectionTcpTimeout: 0,
 		ConnectionUdpTimeout: 0,
 	}
