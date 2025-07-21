@@ -10,6 +10,7 @@ package assembler
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"hash/crc32"
 	"io"
@@ -59,7 +60,7 @@ func (s *Service) parseHttpFlow(flow *db.FlowEntry) {
 func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set[uint32]) {
 	flowItem := &flow.Flow[idx]
 	// TODO; rethink the flowItem format to make this less clunky
-	reader := bufio.NewReader(strings.NewReader(flowItem.Data))
+	reader := bufio.NewReader(bytes.NewReader(flowItem.Raw))
 
 	switch flowItem.From {
 	case "c":
@@ -102,9 +103,9 @@ func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set
 
 		// This can exceed the mongo document limit, so we need to make sure
 		// the replacement will fit
-		newSize := flow.Size + (len(replacement) - len(flowItem.Data))
+		newSize := flow.Size + (len(replacement) - len(flowItem.Raw))
 		if newSize <= streamdoc_limit {
-			flowItem.Data = string(replacement)
+			flowItem.Raw = replacement
 			flow.Size = newSize
 		}
 
@@ -148,9 +149,9 @@ func parseHttpFlowItem(flow *db.FlowEntry, idx int, s *Service, fingerprints Set
 
 		// This can exceed the mongo document limit, so we need to make sure
 		// the replacement will fit
-		newSize := flow.Size + (len(replacement) - len(flowItem.Data))
+		newSize := flow.Size + (len(replacement) - len(flowItem.Raw))
 		if newSize <= streamdoc_limit {
-			flowItem.Data = string(replacement)
+			flowItem.Raw = replacement
 			flow.Size = newSize
 		}
 	}

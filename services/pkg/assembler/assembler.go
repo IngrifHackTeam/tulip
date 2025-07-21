@@ -26,7 +26,6 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 	"github.com/google/gopacket/reassembly"
-	"github.com/panjf2000/ants/v2"
 )
 
 type Service struct {
@@ -39,7 +38,7 @@ type Service struct {
 	AssemblerTcp *reassembly.Assembler
 	AssemblerUdp *UdpAssembler
 
-	flowChannel chan db.FlowEntry // Channel for processed flow entries
+	toDb chan db.FlowEntry // Channel for processed flow entries
 }
 
 type Config struct {
@@ -72,14 +71,14 @@ func NewAssemblerService(opts Config) *Service {
 		AssemblerTcp: reassembly.NewAssembler(streamPool),
 		AssemblerUdp: assemblerUdp,
 
-		flowChannel: make(chan db.FlowEntry), // Buffered channel for flow entries
+		toDb: make(chan db.FlowEntry),
 	}
 	srv.Config = opts
 
 	onComplete := func(fe db.FlowEntry) { srv.reassemblyCallback(fe) }
 	srv.StreamFactory.OnComplete = onComplete
 
-	go srv.insertFlows()
+	go srv.handleInsertionQueue()
 
 	return srv
 }
@@ -291,11 +290,14 @@ func (s *Service) reassemblyCallback(entry db.FlowEntry) {
 	// it was compressed with gzip or similar.
 	s.parseHttpFlow(&entry)
 
+	// Preprocess the flow items
+	sanitizeFlowItemData(&entry)
+
 	// search for flags in the flow items
 	applyFlagRegexTags(&entry, s.FlagRegex)
 
 	// queue the flow for insertion into the database
-	s.insertFlowEntry(&entry)
+	s.toDb <- entry
 }
 
 // applyFlagRegexTags searches for flags in flow items using a regex pattern
@@ -312,8 +314,8 @@ func applyFlagRegexTags(entry *db.FlowEntry, flagRegex *regexp.Regexp) {
 	for idx := 0; idx < len(entry.Flow); idx++ {
 		flags, tags := searchForFlagsInItem(&entry.Flow[idx], flagRegex)
 
-		entry.Tags = append(entry.Tags, tags...)
-		entry.Flags = append(entry.Flags, flags...)
+		entry.Tags = appendUnique(entry.Tags, tags...)
+		entry.Flags = appendUnique(entry.Flags, flags...)
 	}
 }
 
@@ -323,7 +325,7 @@ func searchForFlagsInItem(
 	item *db.FlowItem,
 	flagRegex *regexp.Regexp,
 ) (flags []string, tags []string) {
-	matches := flagRegex.FindAllStringSubmatch(item.Data, -1)
+	matches := flagRegex.FindAllSubmatch(item.Raw, -1)
 	if len(matches) == 0 {
 		return // No matches found, skip further processing
 	}
@@ -337,31 +339,70 @@ func searchForFlagsInItem(
 	// Add the flags
 	for _, match := range matches {
 		var flag string
-		flag = match[0]
+		flag = string(match[0])
 		flags = appendUnique(flags, flag)
 	}
 	return
 }
 
-// insertFlowEntry inserts the processed flow entry into the database.
-func (s *Service) insertFlowEntry(entry *db.FlowEntry) {
-	s.flowChannel <- *entry // Send to channel for processing
+// sanitizeFlowItemData copies the raw data of each flow item into
+// the Data field, replacing non-printable characters with '.'.
+func sanitizeFlowItemData(flow *db.FlowEntry) {
+	// Preprocess the flow items to ensure they are ready for database insertion
+	for idx := range flow.Flow {
+		flowItem := &flow.Flow[idx]
+
+		// Filter the data string down to only printable characters
+		printableData := make([]byte, len(flowItem.Raw))
+		for i, b := range flowItem.Raw {
+			if (b >= 32 && b <= 126) || b == '\t' || b == '\r' || b == '\n' {
+				printableData[i] = b
+			} else {
+				printableData[i] = '.'
+			}
+		}
+		flowItem.Data = string(printableData)
+	}
 }
 
-func (s *Service) insertFlows() error {
-	const maxWorkers = 100
+func (s *Service) handleInsertionQueue() {
+	queueSize := 200
 
-	pool, err := ants.NewPool(maxWorkers, ants.WithPreAlloc(true))
+	queue := make([]db.FlowEntry, 0, queueSize)
+
+	// we debounce the insertion of flows into the database
+	// by collecting them in a queue and inserting them in batches
+
+	for {
+		select {
+		case entry := <-s.toDb:
+			// Add the entry to the queue
+			queue = append(queue, entry)
+			if len(queue) >= queueSize {
+				s.insertFlows(queue)
+				queue = queue[:0] // Clear the queue
+			}
+		case <-time.After(500 * time.Millisecond):
+			// If the timer ticks, insert all entries in the queue
+			if len(queue) > 0 {
+				s.insertFlows(queue)
+				queue = queue[:0] // Clear the queue
+			}
+		}
+	}
+
+}
+
+func (s *Service) insertFlows(flows []db.FlowEntry) {
+	if len(flows) == 0 {
+		return
+	}
+
+	slog.Debug("Inserting flows into database", "count", len(flows))
+	err := s.DB.InsertFlows(context.Background(), flows)
 	if err != nil {
-		return fmt.Errorf("failed to create goroutine pool: %w", err)
+		slog.Error("Failed to insert flows into database", "err", err)
+	} else {
+		slog.Info("Successfully inserted flows into database", "count", len(flows))
 	}
-
-	for entry := range s.flowChannel {
-		pool.Submit(func() {
-			s.DB.InsertFlow(entry)
-		})
-	}
-
-	pool.Release()
-	return nil
 }

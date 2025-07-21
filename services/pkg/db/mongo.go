@@ -271,31 +271,22 @@ func (db MongoDatabase) ConfigureIndexes() {
 // We can always swap this out with something better, but this is how flower currently handles deduping.
 //
 // A single flow is defined by a db.FlowEntry" struct, containing an array of flowitems and some metadata
-func (db MongoDatabase) InsertFlow(flow FlowEntry) {
+func (db MongoDatabase) InsertFlows(ctx context.Context, flows []FlowEntry) error {
 	flowCollection := db.client.Database("pcap").Collection("pcap")
-
-	// Process the data, so it works well in mongodb
-	for idx := range flow.Flow {
-		flowItem := &flow.Flow[idx]
-
-		flowItem.Raw = []byte(flowItem.Data)
-
-		// filter the data string down to only printable characters
-		newRaw := make([]byte, 0, len(flowItem.Data))
-		for i := 0; i < len(flowItem.Data); i++ {
-			if flowItem.Data[i] >= 32 && flowItem.Data[i] <= 126 {
-				newRaw = append(newRaw, flowItem.Data[i])
-			}
-		}
-		flowItem.Raw = newRaw
+	if len(flows) == 0 {
+		return nil // No flows to insert
 	}
 
-	// TODO; use insertMany instead
-	_, err := flowCollection.InsertOne(context.TODO(), flow)
+	docs := make([]any, len(flows))
+	for i, flow := range flows {
+		docs[i] = flow
+	}
+
+	_, err := flowCollection.InsertMany(ctx, docs)
 	if err != nil {
-		log.Println("Error occured while inserting record: ", err)
-		log.Println("NO PCAP DATA WILL BE AVAILABLE FOR: ", flow.Filename)
+		return fmt.Errorf("error occurred while inserting multiple records: %v", err)
 	}
+	return nil
 }
 
 type PcapFile struct {
@@ -556,8 +547,8 @@ type GetFlowsOptions struct {
 	SrcIp        string
 	Limit        int
 	Offset       int
-	FlowData     string   // Optional data field to filter flows by
-	Fingerprints []int // Optional fingerprints to filter flows by
+	FlowData     string // Optional data field to filter flows by
+	Fingerprints []int  // Optional fingerprints to filter flows by
 }
 
 func (db MongoDatabase) GetFlows(ctx context.Context, opts *GetFlowsOptions) ([]FlowEntry, error) {
@@ -727,4 +718,24 @@ func (db MongoDatabase) GetFlagIds() ([]FlagIdEntry, error) {
 
 func (db MongoDatabase) GetClient() *mongo.Client {
 	return db.client
+}
+
+func (db MongoDatabase) GetFingerprints(ctx context.Context) ([]int, error) {
+	collection := db.client.Database("pcap").Collection("pcap")
+
+	cur, err := collection.Distinct(ctx, "fingerprints", bson.M{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct fingerprints: %v", err)
+	}
+
+	fingerprints := make([]int, 0, len(cur))
+	for _, v := range cur {
+		if fingerprint, ok := v.(int64); ok {
+			fingerprints = append(fingerprints, int(fingerprint))
+		} else {
+			slog.Warn("Non-integer fingerprint found", "value", v)
+		}
+	}
+
+	return fingerprints, nil
 }

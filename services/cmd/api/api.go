@@ -42,6 +42,7 @@ func (api *Router) RegisterRoutes(e *echo.Echo) {
 	e.GET("/to_python_request/:id", api.convertToPythonRequests)
 	e.GET("/to_pwn/:id", api.convertToPwn)
 	e.GET("/download/", api.downloadFile)
+	e.GET("/fingerprints", api.getFingerprints)
 
 	e.POST("/query", api.query)
 	e.POST("/to_single_python_request", api.convertToSinglePythonRequest)
@@ -466,6 +467,16 @@ func (api *Router) downloadFile(c echo.Context) error {
 	return c.File(absPath) // This will write the file to the response
 }
 
+func (a *Router) getFingerprints(c echo.Context) error {
+	res, err := a.DB.GetFingerprints(c.Request().Context())
+	if err != nil {
+		slog.Error("Failed to fetch fingerprints", slog.Any("err", err))
+		return c.JSON(http.StatusInternalServerError, apiError{"Could not fetch fingerprints. See server logs for details."})
+	}
+
+	return c.JSON(http.StatusOK, res)
+}
+
 // --- Helpers ---
 
 // --- Python HTTP request conversion helpers ---
@@ -496,7 +507,7 @@ func convertFlowToHTTPRequests(flow *db.FlowEntry, tokenize, useSession bool) (s
 	}
 	for _, msg := range flow.Flow {
 		if msg.From == "c" {
-			req, data, dataParam, headers, err := decodeHTTPRequest([]byte(msg.Data), tokenize)
+			req, data, dataParam, headers, err := decodeHTTPRequest(msg.Raw, tokenize)
 			if err != nil {
 				return "", err
 			}

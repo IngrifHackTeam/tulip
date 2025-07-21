@@ -71,7 +71,7 @@ function FlowContainer({
       <div className="ml-auto">
         <CopyButton copyText={copyText}></CopyButton>
       </div>
-      <pre className="p-5 overflow-auto">{children}</pre>
+      <pre className="p-5 overflow-auto whitespace-pre-wrap">{children}</pre>
     </div>
   );
 }
@@ -711,7 +711,7 @@ function FlowFingerprintTimeline({
     isLoading: relatedFlowsLoading,
   } = useGetFlowsQuery({
     fingerprints: fingerprints,
-    limit: 5,
+    limit: 100,
   });
 
   function renderTimeline(relatedFlows: Flow[]) {
@@ -736,7 +736,14 @@ function FlowFingerprintTimeline({
                 </span>
 
                 {id === relatedFlow._id ? (
-                  `${relatedFlow._id} (this flow)`
+                  <>
+                    <span className="font-mono text-xs text-purple-700 dark:text-purple-400 underline hover:bg-purple-100 dark:hover:bg-purple-900 px-1 py-0.5 rounded ">
+                      {relatedFlow._id}
+                    </span>
+                    <span className="text-gray-500 dark:text-gray-400">
+                      (this flow)
+                    </span>
+                  </>
                 ) : (
                   <>
                     <NavLink
@@ -747,7 +754,7 @@ function FlowFingerprintTimeline({
                       {relatedFlow._id}
                     </NavLink>
                     <span className="text-gray-500 dark:text-gray-400">
-                      Matched fingerprints:
+                      Matched fingerprints:{" "}
                       {relatedFlow.fingerprints?.filter((fp) =>
                         fingerprints.includes(fp),
                       )}

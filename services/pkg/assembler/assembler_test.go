@@ -6,6 +6,8 @@ package assembler
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,10 +65,12 @@ func (n *NoopDatabase) GetTagList() ([]string, error)                  { return 
 func (n *NoopDatabase) GetSignature(string) (db.Signature, error)      { return db.Signature{}, nil }
 func (n *NoopDatabase) SetStar(string, bool) error                     { return nil }
 func (n *NoopDatabase) GetFlowDetail(id string) (*db.FlowEntry, error) { return nil, nil }
-func (n *NoopDatabase) InsertFlow(db.FlowEntry)                        {}
-func (n *NoopDatabase) GetPcap(string) (bool, db.PcapFile)             { return false, db.PcapFile{} }
-func (n *NoopDatabase) InsertPcap(db.PcapFile) bool                    { return true }
-func (n *NoopDatabase) GetFlagIds() ([]db.FlagIdEntry, error)          { return nil, nil }
+func (n *NoopDatabase) InsertFlows(ctx context.Context, flows []db.FlowEntry) error {
+	return nil
+}
+func (n *NoopDatabase) GetPcap(string) (bool, db.PcapFile)    { return false, db.PcapFile{} }
+func (n *NoopDatabase) InsertPcap(db.PcapFile) bool           { return true }
+func (n *NoopDatabase) GetFlagIds() ([]db.FlagIdEntry, error) { return nil, nil }
 
 func makeTestAssembler() *Service {
 	cfg := Config{
@@ -113,7 +117,7 @@ func TestApplyFlagRegexTags(t *testing.T) {
 		flowItems := make([]db.FlowItem, len(data))
 		nextFrom := "c"
 		for i, d := range data {
-			flowItems[i] = db.FlowItem{Data: d, From: nextFrom}
+			flowItems[i] = db.FlowItem{Raw: []byte(d), From: nextFrom}
 			if nextFrom == "s" {
 				nextFrom = "c"
 			} else {
@@ -159,6 +163,15 @@ func TestApplyFlagRegexTags(t *testing.T) {
 			[]string{},
 			[]string{},
 		},
+		{
+			"real world scenario",
+			makeFlowEntry(
+				"FLAG{1234}",
+				mustDecodeBase64(t, `SFRUUC8xLjEgMjAwIE9LDQpTZXJ2ZXI6IG5naW54LzEuMjcuNQ0KRGF0ZTogRnJpLCAyMCBKdW4gMjAyNSAxNTo1NjowNyBHTVQNCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vanNvbg0KQ29ubmVjdGlvbjogY2xvc2UNCg0KeyJpbnZpdGVzIjogW3siaWQiOiAiMDE5NzhlMDUtY2JkYi03ZDBjLWEwMzMtMzk5OTFhZDVjNGE2IiwgImZyb20iOiAiU2laUkJaVHd6MDcwIiwgInRpdGxlIjogImt2aHQzSHJIRm8iLCAiZGVzY3JpcHRpb24iOiAiNU8wODAxVkJJQUNMU1JQWjZONktVTVA5VlJIMDdBRT0iLCAiZGF0ZSI6ICIyMDMzLTA3LTE1In1dLCAic3VjY2VzcyI6IHRydWV9Cg==`)),
+			"[A-Z0-9]{31}=",
+			[]string{"flag-out"},
+			[]string{"5O0801VBIACLSRPZ6N6KUMP9VRH07AE="},
+		},
 	}
 
 	for _, c := range cases {
@@ -170,4 +183,13 @@ func TestApplyFlagRegexTags(t *testing.T) {
 			assert.Equal(t, c.expectedFlags, c.input.Flags, "flags should match expected")
 		})
 	}
+}
+
+func mustDecodeBase64(t *testing.T, s string) string {
+	t.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatalf("failed to decode base64: %v", err)
+	}
+	return string(decoded)
 }

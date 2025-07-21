@@ -11,6 +11,8 @@
 package db
 
 import (
+	"context"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -49,8 +51,9 @@ type Database interface {
 	GetSignature(id string) (Signature, error)       // Get a signature by ID
 	SetStar(flowID string, star bool) error          // Set or unset the "starred" tag on a flow
 	GetFlowDetail(id string) (*FlowEntry, error)     // Get detailed flow information by ID
-	InsertFlow(flow FlowEntry)                       // Insert a new flow into the database
 	GetPcap(uri string) (bool, PcapFile)             // Check if a pcap file exists and return its metadata
 	InsertPcap(file PcapFile) bool                   // Insert a new pcap file or update its position
 	GetFlagIds() ([]FlagIdEntry, error)
+
+	InsertFlows(ctx context.Context, flows []FlowEntry) error // Insert multiple flows into the database
 }
