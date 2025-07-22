@@ -25,7 +25,7 @@ import (
 
 // Router holds dependencies for handlers
 type Router struct {
-	DB     db.MongoDatabase
+	DB     db.Database
 	Config *Config
 }
 
@@ -170,7 +170,7 @@ func (api *Router) query(c echo.Context) error {
 		Blocked      bool               `json:"blocked"`
 		Filename     string             `json:"filename"` // Name of the pcap file this flow was captured in
 		Fingerprints []uint32           `json:"fingerprints"`
-		Signatures   []db.Signature     `json:"signatures"` // Signatures matched by this flow
+		Signatures   []db.SuricataSig   `json:"signatures"` // Signatures matched by this flow
 		Flow         []db.FlowItem      `json:"flow"`
 		Tags         []string           `json:"tags"`    // Tags associated with this flow, e.g. "starred", "tcp", "udp", "blocked"
 		Size         int                `json:"size"`    // Size of the flow in bytes
@@ -179,7 +179,7 @@ func (api *Router) query(c echo.Context) error {
 	}
 
 	// Convert bson.D filter to GetFlowsOptions
-	opts := &db.GetFlowsOptions{
+	opts := &db.FindFlowsOptions{
 		Limit:        req.Limit,
 		Offset:       req.Offset,
 		Fingerprints: req.Fingerprints,
@@ -271,7 +271,7 @@ func (api *Router) query(c echo.Context) error {
 			Flagids:      flow.Flagids,
 		}
 
-		res.Signatures = make([]db.Signature, 0, len(flow.Suricata))
+		res.Signatures = make([]db.SuricataSig, 0, len(flow.Suricata))
 		for _, sigID := range flow.Suricata {
 			sig, err := api.DB.GetSignature(sigID)
 			if err != nil {

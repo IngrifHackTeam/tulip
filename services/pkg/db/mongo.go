@@ -26,47 +26,37 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-type MongoDatabase struct {
+type mongoDb struct {
 	client *mongo.Client
+
+	flowColl      *mongo.Collection // Collection for pcap files
+	signatureColl *mongo.Collection // Collection for signatures
+	tagsColl      *mongo.Collection // Collection for tags
 }
 
-// GetFlowList implements filtering logic similar to the Python getFlowList
-func (db MongoDatabase) GetFlowList(filters bson.D) ([]FlowEntry, error) {
-	collection := db.client.Database("pcap").Collection("pcap")
-
-	opt := options.Find().
-		SetLimit(0).                     // No limit, we want all matching flows
-		SetSort(bson.M{"time": -1}).     // Sort by time descending
-		SetProjection(bson.M{"flow": 0}) // Exclude flow details for performance
-
-	// If filters are nil, use an empty filter
-	if filters == nil {
-		filters = bson.D{}
-	}
-
-	cur, err := collection.Find(context.TODO(), filters, opt)
+func NewMongoDatabase(ctx context.Context, uri string) (Database, error) {
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
-		return nil, fmt.Errorf("failed to find flows: %v", err)
-	}
-	// Ensure the cursor is closed after use
-	defer cur.Close(context.TODO())
-
-	results := make([]FlowEntry, 0)
-	for cur.Next(context.TODO()) {
-		var entry FlowEntry
-		err := cur.Decode(&entry)
-		if err != nil {
-			slog.Error("Failed to decode flow entry", "error", err)
-			continue // Skip this entry if decoding fails
-		}
-		results = append(results, entry)
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
 	}
 
-	return results, nil
+	if err := client.Ping(ctx, readpref.Primary()); err != nil {
+		client.Disconnect(ctx)
+		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
+	}
+
+	db := &mongoDb{
+		client:        client,
+		flowColl:      client.Database("pcap").Collection("pcap"),
+		signatureColl: client.Database("pcap").Collection("signatures"),
+		tagsColl:      client.Database("pcap").Collection("tags"),
+	}
+
+	return db, nil
 }
 
 // GetTagList returns all tag names (_id) from the tags collection
-func (db MongoDatabase) GetTagList() ([]string, error) {
+func (db *mongoDb) GetTagList() ([]string, error) {
 	tagsCollection := db.client.Database("pcap").Collection("tags")
 
 	cur, err := tagsCollection.Find(context.TODO(), bson.M{})
@@ -125,16 +115,14 @@ func (db MongoDatabase) GetTagList() ([]string, error) {
 }
 
 // CountFlows returns the number of flows matching the given filters.
-func (db MongoDatabase) CountFlows(filters bson.D) (int, error) {
-	collection := db.client.Database("pcap").Collection("pcap")
-	count, err := collection.CountDocuments(context.TODO(), filters)
-	return int(count), err
+func (db *mongoDb) CountFlows(filters bson.D) (int64, error) {
+	return db.flowColl.CountDocuments(context.TODO(), filters)
 }
 
 // GetSignature returns a signature document by its integer ID or ObjectID string
-func (db MongoDatabase) GetSignature(id string) (Signature, error) {
+func (db *mongoDb) GetSignature(id string) (SuricataSig, error) {
 	collection := db.client.Database("pcap").Collection("signatures")
-	var result Signature
+	var result SuricataSig
 
 	// Try as ObjectID first
 	objID, err := primitive.ObjectIDFromHex(id)
@@ -154,9 +142,9 @@ func (db MongoDatabase) GetSignature(id string) (Signature, error) {
 }
 
 // SetStar sets or unsets the "starred" tag on a flow
-func (db MongoDatabase) SetStar(flowID string, star bool) error {
+func (db *mongoDb) SetStar(flowId string, star bool) error {
 	collection := db.client.Database("pcap").Collection("pcap")
-	objID, err := primitive.ObjectIDFromHex(flowID)
+	objID, err := primitive.ObjectIDFromHex(flowId)
 	if err != nil {
 		return err
 	}
@@ -171,7 +159,7 @@ func (db MongoDatabase) SetStar(flowID string, star bool) error {
 }
 
 // GetFlowDetail returns a flow by its ObjectID string, including signatures
-func (db MongoDatabase) GetFlowDetail(id string) (*FlowEntry, error) {
+func (db *mongoDb) GetFlowDetail(id string) (*FlowEntry, error) {
 	collection := db.client.Database("pcap").Collection("pcap")
 	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
@@ -185,9 +173,9 @@ func (db MongoDatabase) GetFlowDetail(id string) (*FlowEntry, error) {
 	// Attach signatures if present (unchanged)
 	if len(flow.Suricata) > 0 {
 		sigColl := db.client.Database("pcap").Collection("signatures")
-		var sigs []Signature
+		var sigs []SuricataSig
 		for _, sigID := range flow.Suricata {
-			var sig Signature
+			var sig SuricataSig
 			err := sigColl.FindOne(context.TODO(), bson.M{"id": sigID}).Decode(&sig)
 			if err == nil {
 				sigs = append(sigs, sig)
@@ -218,35 +206,29 @@ func toInt(v any) (int, error) {
 	}
 }
 
-func ConnectMongo(uri string) (MongoDatabase, error) {
-	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(uri))
+func (db *mongoDb) ConfigureDatabase() error {
+	err := db.InsertTags([]string{
+		"flag-in",
+		"flag-out",
+		"blocked",
+		"suricata",
+		"starred",
+		"flagid",
+		"tcp",
+		"udp",
+	})
 	if err != nil {
-		return MongoDatabase{}, fmt.Errorf("failed to connect to MongoDB: %v", err)
+		return fmt.Errorf("error inserting initial tags: %v", err)
 	}
 
-	if err := client.Ping(context.TODO(), readpref.Primary()); err != nil {
-		client.Disconnect(context.TODO())
-		return MongoDatabase{}, fmt.Errorf("failed to ping MongoDB: %v", err)
+	err = db.ConfigureIndexes()
+	if err != nil {
+		return fmt.Errorf("error configuring indexes: %v", err)
 	}
-
-	return MongoDatabase{
-		client: client,
-	}, nil
+	return nil
 }
 
-func (db MongoDatabase) ConfigureDatabase() {
-	db.InsertTag("flag-in")
-	db.InsertTag("flag-out")
-	db.InsertTag("blocked")
-	db.InsertTag("suricata")
-	db.InsertTag("starred")
-	db.InsertTag("flagid")
-	db.InsertTag("tcp")
-	db.InsertTag("udp")
-	db.ConfigureIndexes()
-}
-
-func (db MongoDatabase) ConfigureIndexes() {
+func (db *mongoDb) ConfigureIndexes() error {
 	// create Index
 	flowCollection := db.client.Database("pcap").Collection("pcap")
 
@@ -260,9 +242,9 @@ func (db MongoDatabase) ConfigureIndexes() {
 	})
 
 	if err != nil {
-		fmt.Println("Error creating indexes:", err)
-		panic(err)
+		return fmt.Errorf("error creating indexes: %v", err)
 	}
+	return nil
 }
 
 // Flows are either coming from a file, in which case we'll dedupe them by pcap file name.
@@ -271,7 +253,7 @@ func (db MongoDatabase) ConfigureIndexes() {
 // We can always swap this out with something better, but this is how flower currently handles deduping.
 //
 // A single flow is defined by a db.FlowEntry" struct, containing an array of flowitems and some metadata
-func (db MongoDatabase) InsertFlows(ctx context.Context, flows []FlowEntry) error {
+func (db mongoDb) InsertFlows(ctx context.Context, flows []FlowEntry) error {
 	flowCollection := db.client.Database("pcap").Collection("pcap")
 	if len(flows) == 0 {
 		return nil // No flows to insert
@@ -289,15 +271,9 @@ func (db MongoDatabase) InsertFlows(ctx context.Context, flows []FlowEntry) erro
 	return nil
 }
 
-type PcapFile struct {
-	FileName string `bson:"file_name"` // Name of the pcap file
-	Position int64  `bson:"position"`  // N. of packets processed so far
-	Finished bool   `bson:"finished"`  // Indicates if the pcap file has been fully processed
-}
-
 // Insert a new pcap uri, returns true if the pcap was not present yet,
 // otherwise returns false
-func (db MongoDatabase) InsertPcap(pcap PcapFile) bool {
+func (db *mongoDb) InsertPcap(pcap PcapFile) error {
 	files := db.client.Database("pcap").Collection("filesImported")
 
 	// it could already be present, so let's update it
@@ -305,13 +281,12 @@ func (db MongoDatabase) InsertPcap(pcap PcapFile) bool {
 
 	_, err := files.ReplaceOne(context.TODO(), filter, pcap, options.Replace().SetUpsert(true))
 	if err != nil {
-		log.Println("Error occured while inserting pcap file: ", err)
-		return false
+		return fmt.Errorf("error occurred while inserting pcap file: %v", err)
 	}
-	return true
+	return nil
 }
 
-func (db MongoDatabase) GetPcap(uri string) (bool, PcapFile) {
+func (db mongoDb) GetPcap(uri string) (bool, PcapFile) {
 	files := db.client.Database("pcap").Collection("filesImported")
 	var result PcapFile
 	match := files.FindOne(context.TODO(), bson.M{"file_name": uri})
@@ -319,28 +294,11 @@ func (db MongoDatabase) GetPcap(uri string) (bool, PcapFile) {
 	return match.Err() != mongo.ErrNoDocuments, result
 }
 
-type FlowID struct {
-	Src_port int
-	Dst_port int
-	Src_ip   string
-	Dst_ip   string
-	Time     time.Time
-}
-
-type Signature struct {
-	MongoID primitive.ObjectID `bson:"_id,omitempty"`
-	ID      int
-	Msg     string
-	Action  string
-	Tag     string `bson:"omitempty"`
-}
-
-func (db MongoDatabase) AddSignature(sig Signature) string {
+// AddSignature adds a signature to the database, returning its MongoDB ID and error.
+func (db mongoDb) AddSignature(ctx context.Context, sig SuricataSig) (primitive.ObjectID, error) {
 	sigCollection := db.client.Database("pcap").Collection("signatures")
 
-	// TODO; there's a bit of a race here, but I'm also racing to get this code working in time
-	// for the next demo, so it all evens out.
-
+	// Build the query to check for an existing signature
 	query := bson.M{
 		"id":     sig.ID,
 		"msg":    sig.Msg,
@@ -348,62 +306,58 @@ func (db MongoDatabase) AddSignature(sig Signature) string {
 		"tag":    sig.Tag,
 	}
 
-	var existing_sig Signature
-	err := sigCollection.FindOne(context.TODO(), query).Decode(&existing_sig)
-	if err != nil {
-		// The signature does not appear in the DB yet. Let's add it.
-		res, err := sigCollection.InsertOne(context.TODO(), query)
-		if err != nil {
-			log.Println("Rule add failed with error: ", err)
-			return ""
-		}
-		ret := res.InsertedID.(primitive.ObjectID)
-		return ret.Hex()
-	} else {
-		// The signature _does_ appear in the db. Let's return it's ID directly!
-		return existing_sig.MongoID.Hex()
+	var existingSig SuricataSig
+	err := sigCollection.FindOne(context.TODO(), query).Decode(&existingSig)
+	if err == nil {
+		// Signature exists, return its MongoDB ID
+		return existingSig.MongoID, nil
 	}
+	if err != mongo.ErrNoDocuments {
+		// Some other error occurred
+		return primitive.ObjectID{}, fmt.Errorf("failed to check for existing signature: %v", err)
+	}
+
+	// Signature does not exist, insert it
+	res, err := sigCollection.InsertOne(context.TODO(), sig)
+	if err != nil {
+		return primitive.ObjectID{}, fmt.Errorf("failed to insert signature: %v", err)
+	}
+
+	insertedID, ok := res.InsertedID.(primitive.ObjectID)
+	if !ok {
+		return primitive.ObjectID{}, fmt.Errorf("inserted ID is not an ObjectID")
+	}
+	return insertedID, nil
 }
 
-func (db MongoDatabase) findFlowInDB(flow FlowID, window int) (mongo.Collection, bson.M) {
-	// Find a flow that more or less matches the one we're looking for
-	flowCollection := db.client.Database("pcap").Collection("pcap")
+// flowIdFilter returns a filter for finding flows that match the given FlowID
+// and have a time within the specified window (in milliseconds).
+func flowIdFilter(flow FlowID, window int) bson.M {
 	epoch := int(flow.Time.UnixNano() / 1000000)
 	filter := bson.M{
-		"src_port": flow.Src_port,
-		"dst_port": flow.Dst_port,
-		"src_ip":   flow.Src_ip,
-		"dst_ip":   flow.Dst_ip,
+		"src_port": flow.SrcPort,
+		"dst_port": flow.DstPort,
+		"src_ip":   flow.SrcIp,
+		"dst_ip":   flow.DstIp,
 		"time": bson.M{
 			"$gt": epoch - window,
 			"$lt": epoch + window,
 		},
 	}
-
-	return *flowCollection, filter
+	return filter
 }
 
-func (db MongoDatabase) updateFlowInDB(flowCollection mongo.Collection, filter bson.M, update bson.M) bool {
-	// Enrich the flow with tag information
-	res, err := flowCollection.UpdateOne(context.TODO(), filter, update)
-	if err != nil {
-		log.Println("Error occured while editing record:", err)
-		return false
-	}
-
-	return res.MatchedCount > 0
-}
-
-func (db MongoDatabase) AddSignatureToFlow(flow FlowID, sig Signature, window int) bool {
+// AddSignatureToFlow adds a signature to a flow, updating the flow's tags and blocked status if necessary.
+func (db *mongoDb) AddSignatureToFlow(flow FlowID, sig SuricataSig, window int) error {
 	// Add the signature to the collection
-	sig_id := db.AddSignature(sig)
-	if sig_id == "" {
-		return false
+	sigObjectId, err := db.AddSignature(context.TODO(), sig)
+	if err != nil {
+		return fmt.Errorf("failed to add signature: %v", err)
 	}
+
+	filter := flowIdFilter(flow, window)
 
 	tags := []string{"suricata"}
-	flowCollection, filter := db.findFlowInDB(flow, window)
-
 	// Add tag from the signature if it contained one
 	if sig.Tag != "" {
 		db.InsertTag(sig.Tag)
@@ -421,7 +375,7 @@ func (db MongoDatabase) AddSignatureToFlow(flow FlowID, sig Signature, window in
 				"tags": bson.M{
 					"$each": append(tags, "blocked"),
 				},
-				"suricata": sig_id,
+				"suricata": sigObjectId,
 			},
 		}
 	} else {
@@ -430,47 +384,68 @@ func (db MongoDatabase) AddSignatureToFlow(flow FlowID, sig Signature, window in
 				"tags": bson.M{
 					"$each": tags,
 				},
-				"suricata": sig_id,
+				"suricata": sigObjectId,
 			},
 		}
 	}
 
-	return db.updateFlowInDB(flowCollection, filter, update)
+	flowCollection := db.client.Database("pcap").Collection("pcap")
+	res, err := flowCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		return fmt.Errorf("failed to update flow: %v", err)
+	} else if res.MatchedCount == 0 {
+		return fmt.Errorf("no flow matched the given filter")
+	}
+
+	// If we updated the flow, we can return nil error
+	return nil
 }
 
-func (db MongoDatabase) AddTagsToFlow(flow FlowID, tags []string, window int) bool {
-	flowCollection, filter := db.findFlowInDB(flow, window)
-
-	// Add tags to tag collection
-	for _, tag := range tags {
-		db.InsertTag(tag)
-	}
+// AddTagsToFlow adds tags to a flow, without duplicating existing tags.
+func (db *mongoDb) AddTagsToFlow(flow FlowID, tags []string, window int) error {
+	filter := flowIdFilter(flow, window)
 
 	// Update this flow with the tags
 	update := bson.M{
-		"$addToSet": bson.M{
-			"tags": bson.M{
-				"$each": tags,
-			},
-		},
+		"$addToSet": bson.M{"tags": bson.M{"$each": tags}},
 	}
 
 	// Apply update to database
-	return db.updateFlowInDB(flowCollection, filter, update)
+	flowCollection := db.client.Database("pcap").Collection("pcap")
+	res, err := flowCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		return fmt.Errorf("failed to update flow: %v", err)
+	} else if res.MatchedCount == 0 {
+		return fmt.Errorf("no flow matched the given filter")
+	}
 
+	return nil
 }
-func (db MongoDatabase) InsertTag(tag string) {
+
+func (db *mongoDb) InsertTags(tags []string) error {
 	tagCollection := db.client.Database("pcap").Collection("tags")
-	// Yeah this will err... A lot.... Two more dev days till Athens, this will do.
-	tagCollection.InsertOne(context.TODO(), bson.M{"_id": tag})
+
+	docs := make([]any, len(tags))
+	for i, tag := range tags {
+		docs[i] = bson.M{"_id": tag}
+	}
+
+	// Insert all tags at once, ignoring duplicates (and ignoring error too, since we don't care about existing tags)
+	// SetOrdered(false) allows MongoDB to continue inserting other documents even if one fails
+	// TODO: handle this better?
+	_, _ = tagCollection.InsertMany(context.TODO(), docs, options.InsertMany().SetOrdered(false))
+	return nil
 }
 
-type Flagid struct {
-	ID   primitive.ObjectID `bson:"_id"`
-	Time int                `bson:"time"`
+func (db *mongoDb) InsertTag(tag string) error {
+	tagCollection := db.client.Database("pcap").Collection("tags")
+	// we ignore the error here, since we don't care if the tag already exists
+	// TODO: handle this better?
+	_, _ = tagCollection.InsertOne(context.TODO(), bson.M{"_id": tag})
+	return nil
 }
 
-func (db MongoDatabase) GetFlagids(flaglifetime int) ([]Flagid, error) {
+func (db mongoDb) GetFlagIds(flaglifetime int) ([]FlagId, error) {
 	// Create a context with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -497,11 +472,11 @@ func (db MongoDatabase) GetFlagids(flaglifetime int) ([]Flagid, error) {
 		}
 	}()
 
-	var flagids []Flagid
+	var flagids []FlagId
 
 	// Iterate through the cursor and extract _id values
 	for cur.Next(ctx) {
-		var flagid Flagid
+		var flagid FlagId
 		if err := cur.Decode(&flagid); err != nil {
 			return nil, fmt.Errorf("failed to decode flagid: %v", err)
 		}
@@ -516,42 +491,11 @@ func (db MongoDatabase) GetFlagids(flaglifetime int) ([]Flagid, error) {
 
 }
 
-func (db MongoDatabase) GetLastFlows(ctx context.Context, limit int) ([]FlowEntry, error) {
-	collection := db.client.Database("pcap").Collection("pcap")
-
-	opts := options.Find().SetSort(bson.M{"time": -1}).SetLimit(int64(limit))
-	cur, err := collection.Find(ctx, bson.M{}, opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find last flows: %v", err)
-	}
-	defer cur.Close(ctx)
-
-	var results []FlowEntry
-	for cur.Next(ctx) {
-		var entry FlowEntry
-		if err := cur.Decode(&entry); err == nil {
-			results = append(results, entry)
-		}
-	}
-	return results, nil
+func (db mongoDb) GetLastFlows(ctx context.Context, limit int) ([]FlowEntry, error) {
+	return db.GetFlows(ctx, &FindFlowsOptions{Limit: limit})
 }
 
-type GetFlowsOptions struct {
-	FromTime     int64
-	ToTime       int64
-	IncludeTags  []string
-	ExcludeTags  []string
-	DstPort      int
-	DstIp        string
-	SrcPort      int
-	SrcIp        string
-	Limit        int
-	Offset       int
-	FlowData     string // Optional data field to filter flows by
-	Fingerprints []int  // Optional fingerprints to filter flows by
-}
-
-func (db MongoDatabase) GetFlows(ctx context.Context, opts *GetFlowsOptions) ([]FlowEntry, error) {
+func (db mongoDb) GetFlows(ctx context.Context, opts *FindFlowsOptions) ([]FlowEntry, error) {
 	collection := db.client.Database("pcap").Collection("pcap")
 	query := bson.M{}
 
@@ -631,96 +575,7 @@ func (db MongoDatabase) GetFlows(ctx context.Context, opts *GetFlowsOptions) ([]
 	return results, nil
 }
 
-func (db MongoDatabase) GetFlowByID(ctx context.Context, id string) (*FlowEntry, error) {
-	collection := db.client.Database("pcap").Collection("pcap")
-	objID, err := primitive.ObjectIDFromHex(id)
-	if err != nil {
-		return nil, err
-	}
-	var flow FlowEntry
-	if err := collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&flow); err != nil {
-		return nil, err
-	}
-	return &flow, nil
-}
-
-// FlagIdEntry rappresenta un flagid estratto dal DB
-// (replica la struct usata in assembler/flagid.go)
-type FlagIdEntry struct {
-	Service     string
-	Team        int
-	Round       int
-	Description string
-	FlagId      string
-}
-
-// GetRecentFlagIds estrae tutti i flagid dal DB (ultimi 5 round, con descrizione)
-func (db MongoDatabase) GetFlagIds() ([]FlagIdEntry, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	col := db.client.Database("pcap").Collection("flagids")
-	filter := bson.M{}
-
-	cur, err := col.Find(ctx, filter)
-	if err != nil {
-		slog.Error("[DEBUG] Errore durante Find in MongoDB", "error", err)
-		return nil, err
-	}
-	defer cur.Close(ctx)
-
-	entries := make([]FlagIdEntry, 0)
-	for cur.Next(ctx) {
-		var doc bson.M
-		if err := cur.Decode(&doc); err != nil {
-			slog.Error("[DEBUG] Errore nel decode del documento MongoDB", "error", err)
-			continue
-		}
-		entry := FlagIdEntry{}
-		if v, ok := doc["service"].(string); ok {
-			entry.Service = v
-		}
-		switch v := doc["team"].(type) {
-		case int32:
-			entry.Team = int(v)
-		case int64:
-			entry.Team = int(v)
-		case float64:
-			entry.Team = int(v)
-		case int:
-			entry.Team = v
-		}
-		switch v := doc["round"].(type) {
-		case int32:
-			entry.Round = int(v)
-		case int64:
-			entry.Round = int(v)
-		case float64:
-			entry.Round = int(v)
-		case int:
-			entry.Round = v
-		}
-		if v, ok := doc["description"].(string); ok {
-			entry.Description = v
-		}
-		if v, ok := doc["flagid"].(string); ok {
-			entry.FlagId = v
-		}
-		if entry.FlagId != "" {
-			entries = append(entries, entry)
-		}
-	}
-	if err := cur.Err(); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func (db MongoDatabase) GetClient() *mongo.Client {
-	return db.client
-}
-
-func (db MongoDatabase) GetFingerprints(ctx context.Context) ([]int, error) {
+func (db mongoDb) GetFingerprints(ctx context.Context) ([]int, error) {
 	collection := db.client.Database("pcap").Collection("pcap")
 
 	cur, err := collection.Distinct(ctx, "fingerprints", bson.M{})

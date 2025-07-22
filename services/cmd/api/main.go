@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -29,7 +30,7 @@ func main() {
 
 	// Initialize MongoDB connection using pkg/db
 	mongoURI := cfg.MongoServer()
-	mdb, err := db.ConnectMongo(mongoURI)
+	mdb, err := db.NewMongoDatabase(context.TODO(), mongoURI)
 	if err != nil {
 		slog.Error("Failed to connect to MongoDB", slog.Any("err", err))
 	}

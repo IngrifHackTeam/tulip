@@ -12,6 +12,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -45,15 +46,89 @@ type FlowEntry struct {
 	Flagids      []string           `bson:"flagids" json:"flagids"` // Flag IDs associated with this flow
 }
 
-type Database interface {
-	GetFlowList(filters bson.D) ([]FlowEntry, error) // Get a list of flows with optional filters
-	GetTagList() ([]string, error)                   // Get a list of all tags
-	GetSignature(id string) (Signature, error)       // Get a signature by ID
-	SetStar(flowID string, star bool) error          // Set or unset the "starred" tag on a flow
-	GetFlowDetail(id string) (*FlowEntry, error)     // Get detailed flow information by ID
-	GetPcap(uri string) (bool, PcapFile)             // Check if a pcap file exists and return its metadata
-	InsertPcap(file PcapFile) bool                   // Insert a new pcap file or update its position
-	GetFlagIds() ([]FlagIdEntry, error)
+type PcapFile struct {
+	FileName string `bson:"file_name"` // Name of the pcap file
+	Position int64  `bson:"position"`  // N. of packets processed so far
+	Finished bool   `bson:"finished"`  // Indicates if the pcap file has been fully processed
+}
 
-	InsertFlows(ctx context.Context, flows []FlowEntry) error // Insert multiple flows into the database
+type FindFlowsOptions struct {
+	FromTime     int64
+	ToTime       int64
+	IncludeTags  []string
+	ExcludeTags  []string
+	DstPort      int
+	DstIp        string
+	SrcPort      int
+	SrcIp        string
+	Limit        int
+	Offset       int
+	FlowData     string // Optional data field to filter flows by
+	Fingerprints []int  // Optional fingerprints to filter flows by
+}
+
+type FlowID struct {
+	SrcPort int
+	DstPort int
+	SrcIp   string
+	DstIp   string
+	Time    time.Time
+}
+
+type FlagId struct {
+	ID   primitive.ObjectID `bson:"_id"`
+	Time int                `bson:"time"`
+}
+
+// FlagIdEntry rappresenta un flagid estratto dal DB
+// (replica la struct usata in assembler/flagid.go)
+type FlagIdEntry struct {
+	Service     string
+	Team        int
+	Round       int
+	Description string
+	FlagId      string
+}
+
+// SuricataSig represents a Suricata signature document in the database.
+type SuricataSig struct {
+	MongoID primitive.ObjectID `bson:"_id,omitempty"` // MongoDB ID, will be set on insert
+	ID      int                `bson:"id"`            // Signature ID as created by Suricata
+	Msg     string             `bson:"msg"`           // Signature message
+	Action  string             `bson:"action"`        // Action to take (e.g. "alert", "block")
+	Tag     string             `bson:"omitempty"`     // Optional tag for the signature
+}
+
+type Database interface {
+	// Insert multiple flows into the database
+	InsertFlows(ctx context.Context, flows []FlowEntry) error
+	// Count the number of flows matching the given filters
+	CountFlows(filters bson.D) (int64, error)
+	// Set or unset the "starred" tag on a flow
+	SetStar(id string, star bool) error
+	// Get detailed flow information by ID
+	GetFlowDetail(id string) (*FlowEntry, error)
+	// Get a list of all tags
+	GetTagList() ([]string, error)
+	// Retrieve a Suricata signature by its ID, which can be an integer or ObjectID string.
+	GetSignature(id string) (SuricataSig, error)
+	// Retrieve a PCAP by its URI, returning whether it exists
+	GetPcap(uri string) (bool, PcapFile)
+	// Insert a new pcap file metadata into the database, updating if it already exists.
+	InsertPcap(file PcapFile) error
+	// Add a Suricata signature to the database, returning its MongoDB ID.
+	GetFlagIds(flaglifetime int) ([]FlagId, error)
+	// Set up the database with initial tags and indexes
+	ConfigureDatabase() error
+	// Associates a Suricata signature with a flow
+	AddSignatureToFlow(flow FlowID, sig SuricataSig, window int) error
+	//
+	InsertTags(tags []string) error
+	//
+	AddTagsToFlow(flow FlowID, tags []string, window int) error
+
+	// New functions with context support
+
+	GetFlows(ctx context.Context, opts *FindFlowsOptions) ([]FlowEntry, error)
+	GetFingerprints(ctx context.Context) ([]int, error)
 }

@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/lmittmann/tint"
+	"github.com/panjf2000/ants/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -27,7 +29,7 @@ import (
 	"tulip/pkg/db"
 )
 
-var gDb db.MongoDatabase
+var gDb db.Database
 
 const WINDOW = 5000 // ms
 
@@ -77,7 +79,7 @@ func runEnricher(cmd *cobra.Command, args []string) {
 	var err error
 	dbString := "mongodb://" + mongodb
 	slog.Info("Connecting to MongoDB", slog.String("uri", dbString))
-	gDb, err = db.ConnectMongo(dbString)
+	gDb, err = db.NewMongoDatabase(context.TODO(), dbString)
 	if err != nil {
 		slog.Error("Failed to connect to MongoDB", slog.Any("err", err))
 		os.Exit(1)
@@ -119,70 +121,79 @@ func runEnricher(cmd *cobra.Command, args []string) {
 */
 type suricataLog struct {
 	flow      db.FlowID
-	signature db.Signature
+	signature db.SuricataSig
 }
 
-func handleEveLine(json string, tagFlowbits bool) (bool, error) {
+func handleEveLine(json string, tagFlowbits bool) (stop bool, error error) {
 	if !gjson.Valid(json) {
-		return false, errors.New("Invalid json in eve line")
+		return false, fmt.Errorf("invalid JSON: %s", json)
 	}
 
-	src_port := gjson.Get(json, "src_port")
-	src_ip := gjson.Get(json, "src_ip")
-	dst_port := gjson.Get(json, "dest_port")
-	dst_ip := gjson.Get(json, "dest_ip")
-	start_time := gjson.Get(json, "flow.start")
+	var (
+		srcPort   = gjson.Get(json, "src_port")
+		srcIp     = gjson.Get(json, "src_ip")
+		dstPort   = gjson.Get(json, "dest_port")
+		dstIp     = gjson.Get(json, "dest_ip")
+		startTime = gjson.Get(json, "flow.start")
 
-	sig_msg := gjson.Get(json, "alert.signature")
-	sig_id := gjson.Get(json, "alert.signature_id")
-	sig_action := gjson.Get(json, "alert.action")
+		sigId     = gjson.Get(json, "alert.signature_id")
+		sigMsg    = gjson.Get(json, "alert.signature")
+		sigAction = gjson.Get(json, "alert.action")
+		jtag      = gjson.Get(json, "alert.metadata.tag.0")
+
+		flowbits = gjson.Get(json, "metadata.flowbits")
+
+		src_ip_str = net.ParseIP(srcIp.String()).String()
+		dst_ip_str = net.ParseIP(dstIp.String()).String()
+	)
+
+	start_time_obj, _ := time.Parse("2006-01-02T15:04:05.999999999-0700", startTime.String())
+
 	tag := ""
-	jtag := gjson.Get(json, "alert.metadata.tag.0")
-	flowbits := gjson.Get(json, "metadata.flowbits")
-
-	src_ip_str := net.ParseIP(src_ip.String()).String()
-	dst_ip_str := net.ParseIP(dst_ip.String()).String()
-
-	start_time_obj, _ := time.Parse("2006-01-02T15:04:05.999999999-0700", start_time.String())
-
 	if jtag.Exists() {
 		tag = jtag.String()
 	}
 
-	if !(sig_action.Exists() || (flowbits.Exists() && tagFlowbits)) {
-		return false, nil
+	if !(sigAction.Exists() || (flowbits.Exists() && tagFlowbits)) {
+		return false, nil // No action to take
 	}
 
 	id := db.FlowID{
-		Src_port: int(src_port.Int()),
-		Src_ip:   src_ip_str,
-		Dst_port: int(dst_port.Int()),
-		Dst_ip:   dst_ip_str,
-		Time:     start_time_obj,
+		SrcPort: int(srcPort.Int()),
+		SrcIp:   src_ip_str,
+		DstPort: int(dstPort.Int()),
+		DstIp:   dst_ip_str,
+		Time:    start_time_obj,
 	}
 
 	id_rev := db.FlowID{
-		Dst_port: int(src_port.Int()),
-		Dst_ip:   src_ip_str,
-		Src_port: int(dst_port.Int()),
-		Src_ip:   dst_ip_str,
-		Time:     start_time_obj,
+		DstPort: int(srcPort.Int()),
+		DstIp:   src_ip_str,
+		SrcPort: int(dstPort.Int()),
+		SrcIp:   dst_ip_str,
+		Time:    start_time_obj,
 	}
 
-	ret := false
-	if sig_action.Exists() {
-		sig := db.Signature{
-			ID:     int(sig_id.Int()),
-			Msg:    sig_msg.String(),
-			Action: sig_action.String(),
+	if sigAction.Exists() {
+		sig := db.SuricataSig{
+			ID:     int(sigId.Int()),
+			Msg:    sigMsg.String(),
+			Action: sigAction.String(),
 			Tag:    tag,
 		}
-		ret = gDb.AddSignatureToFlow(id, sig, WINDOW)
-		ret = ret || gDb.AddSignatureToFlow(id_rev, sig, WINDOW)
+		err := gDb.AddSignatureToFlow(id, sig, WINDOW)
+		if err != nil {
+			return false, fmt.Errorf("failed to add signature to flow: %w", err)
+		}
+
+		err = gDb.AddSignatureToFlow(id_rev, sig, WINDOW)
+		if err != nil {
+			return false, fmt.Errorf("failed to add signature to flow: %w", err)
+		}
 	}
 
 	if !(flowbits.Exists() && tagFlowbits) {
-		return ret, nil
+		return false, nil // No flowbits to process
 	}
 
 	tags := []string{}
@@ -191,12 +202,27 @@ func handleEveLine(json string, tagFlowbits bool) (bool, error) {
 		return true
 	})
 
-	ret = gDb.AddTagsToFlow(id, tags, WINDOW)
-	ret = ret || gDb.AddTagsToFlow(id_rev, tags, WINDOW)
-	return ret, nil
+	// Add tags to tag collection
+	gDb.InsertTags(tags)
+
+	err := gDb.AddTagsToFlow(id, tags, WINDOW)
+	if err != nil {
+		return false, fmt.Errorf("failed to add tags to flow: %w", err)
+	}
+	err = gDb.AddTagsToFlow(id_rev, tags, WINDOW)
+	if err != nil {
+		return false, fmt.Errorf("failed to add tags to reverse flow: %w", err)
+	}
+
+	return false, nil
 }
 
 func watchRedis(redisUrl string, tagFlowbits bool) {
+	var (
+		workers    = 4   // Number of goroutines to use for processing
+		redisBatch = 100 // Number of lines to read from redis at once
+	)
+
 	opt, err := redis.ParseURL(redisUrl)
 	if err != nil {
 		slog.Error("Failed to parse redis url", slog.Any("err", err))
@@ -214,8 +240,35 @@ func watchRedis(redisUrl string, tagFlowbits bool) {
 
 	slog.Info("Connected to redis")
 
+	linesProcessingCtx, cancelLinesProcessing := context.WithCancel(context.Background())
+	defer cancelLinesProcessing()
+
+	pool, err := ants.NewPoolWithFuncGeneric(workers, func(line string) {
+		stop, err := handleEveLine(line, tagFlowbits)
+		if err != nil {
+			slog.Error("Failed to handle eve line", slog.String("line", line), slog.Any("err", err))
+		}
+
+		if stop {
+			slog.Info("Stopping enricher due to stop signal")
+			cancelLinesProcessing()
+		}
+	}, ants.WithPreAlloc(true))
+
+	if err != nil {
+		slog.Error("Failed to create goroutine pool", slog.Any("err", err))
+		return
+	}
+
+lineLoop:
 	for {
-		lines, err := rdb.RPopCount(context.TODO(), "suricata", 100).Result()
+		select {
+		case <-linesProcessingCtx.Done():
+			break lineLoop
+		default:
+		}
+
+		lines, err := rdb.RPopCount(context.TODO(), "suricata", redisBatch).Result()
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
 				time.Sleep(1 * time.Second)
@@ -228,14 +281,13 @@ func watchRedis(redisUrl string, tagFlowbits bool) {
 
 		processed := 0
 		for _, line := range lines {
-			_, err = handleEveLine(line, tagFlowbits)
-			if err != nil {
-				slog.Error("Failed to handle eve line", slog.String("line", line), slog.Any("err", err))
-				continue
-			}
+			pool.Invoke(line)
 			processed++
 		}
 
 		slog.Info("Processed lines from redis", slog.Int("processed", processed))
 	}
+
+	pool.Release()
+	slog.Info("Enricher stopped")
 }

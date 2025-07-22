@@ -37,7 +37,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-var gDB db.MongoDatabase
+var gDB db.Database
 
 var rootCmd = &cobra.Command{
 	Use:   "assembler",
@@ -112,7 +112,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	slog.Info("Connecting to MongoDB...", slog.String("uri", dbString))
 
 	var err error
-	gDB, err = db.ConnectMongo(dbString)
+	gDB, err = db.NewMongoDatabase(context.TODO(), dbString)
 	if err != nil {
 		slog.Error("Failed to connect to MongoDB", slog.Any("err", err))
 		os.Exit(1)
@@ -162,7 +162,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	// Create assembler service
 	flagIdUrl := os.Getenv("FLAGID_URL")
 	config := assembler.Config{
-		DB:                   &gDB,
+		DB:                   gDB,
 		TcpLazy:              tcpLazy,
 		Experimental:         experimental,
 		NonStrict:            nonstrict,

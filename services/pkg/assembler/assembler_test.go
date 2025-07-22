@@ -60,24 +60,30 @@ func writeTempFile(t *testing.T, data []byte, suffix string) string {
 	return fname
 }
 
-type NoopDatabase struct{}
+type NoopDb struct{}
 
-func (n *NoopDatabase) GetFlowList(bson.D) ([]db.FlowEntry, error)     { return nil, nil }
-func (n *NoopDatabase) GetTagList() ([]string, error)                  { return nil, nil }
-func (n *NoopDatabase) GetSignature(string) (db.Signature, error)      { return db.Signature{}, nil }
-func (n *NoopDatabase) SetStar(string, bool) error                     { return nil }
-func (n *NoopDatabase) GetFlowDetail(id string) (*db.FlowEntry, error) { return nil, nil }
-func (n *NoopDatabase) InsertFlows(ctx context.Context, flows []db.FlowEntry) error {
-	return nil
+func (n *NoopDb) ConfigureDatabase() error                                { return nil }
+func (n *NoopDb) GetTagList() ([]string, error)                           { return nil, nil }
+func (n *NoopDb) GetSignature(string) (db.SuricataSig, error)             { return db.SuricataSig{}, nil }
+func (n *NoopDb) SetStar(string, bool) error                              { return nil }
+func (n *NoopDb) GetFlowDetail(string) (*db.FlowEntry, error)             { return nil, nil }
+func (n *NoopDb) GetPcap(string) (bool, db.PcapFile)                      { return false, db.PcapFile{} }
+func (n *NoopDb) InsertPcap(db.PcapFile) error                            { return nil }
+func (n *NoopDb) GetFlagIds(int) ([]db.FlagId, error)                     { return nil, nil }
+func (n *NoopDb) CountFlows(bson.D) (int64, error)                        { return 0, nil }
+func (n *NoopDb) AddSignatureToFlow(db.FlowID, db.SuricataSig, int) error { return nil }
+func (n *NoopDb) GetFingerprints(ctx context.Context) ([]int, error)      { return nil, nil }
+func (n *NoopDb) InsertTags(tags []string) error                          { return nil }
+func (n *NoopDb) InsertFlows(context.Context, []db.FlowEntry) error       { return nil }
+func (n *NoopDb) GetFlows(context.Context, *db.FindFlowsOptions) ([]db.FlowEntry, error) {
+	return nil, nil
 }
-func (n *NoopDatabase) GetPcap(string) (bool, db.PcapFile)    { return false, db.PcapFile{} }
-func (n *NoopDatabase) InsertPcap(db.PcapFile) bool           { return true }
-func (n *NoopDatabase) GetFlagIds() ([]db.FlagIdEntry, error) { return nil, nil }
+func (n *NoopDb) AddTagsToFlow(db.FlowID, []string, int) error { return nil }
 
 func makeTestAssembler(t *testing.T) *Service {
 	t.Helper()
 	cfg := Config{
-		DB:                   &NoopDatabase{},
+		DB:                   &NoopDb{},
 		TcpLazy:              false,
 		Experimental:         false,
 		NonStrict:            false,

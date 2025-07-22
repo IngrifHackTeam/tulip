@@ -37,7 +37,7 @@ func main() {
 
 	// Initialize MongoDB connection using pkg/db
 	mongoURI := config.MongoServer()
-	mdb, err := db.ConnectMongo(mongoURI)
+	mdb, err := db.NewMongoDatabase(context.TODO(), mongoURI)
 	if err != nil {
 		slog.Error("Failed to connect to MongoDB", slog.Any("err", err))
 		return
@@ -58,7 +58,7 @@ func main() {
 		server.WithToolCapabilities(false),
 	)
 
-	addTools(mcpServ, &mdb)
+	addTools(mcpServ, mdb)
 
 	// Create HTTP server
 	httpServer := server.NewStreamableHTTPServer(mcpServ)
@@ -81,7 +81,7 @@ func strToClientServer(str string) string {
 	}
 }
 
-func addTools(mcpServ *server.MCPServer, database *db.MongoDatabase) {
+func addTools(mcpServ *server.MCPServer, database db.Database) {
 
 	// List Tags Tool
 	mcpServ.AddTool(
@@ -158,7 +158,7 @@ func addTools(mcpServ *server.MCPServer, database *db.MongoDatabase) {
 			mcp.WithString("flow_data", mcp.Description("Flow data to filter flows, you can insert any string you want to search for in the flow data")),
 		),
 		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			opts := &db.GetFlowsOptions{}
+			opts := &db.FindFlowsOptions{}
 
 			// Parse the request parameters
 			opts.Limit = request.GetInt("limit", 0)
@@ -215,7 +215,7 @@ func addTools(mcpServ *server.MCPServer, database *db.MongoDatabase) {
 				return mcp.NewToolResultError("flow_id is required"), nil
 			}
 
-			flow, err := database.GetFlowByID(ctx, flowID)
+			flow, err := database.GetFlowDetail(flowID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch flow: %v", err)
 			}
