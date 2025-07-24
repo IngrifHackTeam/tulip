@@ -17,8 +17,7 @@ import (
 	"tulip/pkg/db"
 )
 
-type humanizerPass struct {
-}
+type humanizerPass struct{}
 
 // Humanizer creates a new humanizer pass.
 // This pass populates the .Data field of FlowEntry items
@@ -26,12 +25,14 @@ type humanizerPass struct {
 //
 // It works by replacing every character that is not a printable
 // ASCII character with a dot ('.'), similar to the `hexdump` command.
-func Humanizer() AnalysisPass {
+func Humanizer() Pass {
 	return &humanizerPass{}
 }
 
-// Analyze implements the Analyzer interface for humanizerPass.
-func (a *humanizerPass) Analyze(flow *db.FlowEntry) error {
+func (a *humanizerPass) String() string { return "Humanizer" }
+
+// Run implements the Analyzer interface for humanizerPass.
+func (a *humanizerPass) Run(flow *db.FlowEntry) error {
 	for idx := range flow.Flow {
 		flowItem := &flow.Flow[idx]
 		flowItem.Data = sanitizeRawData(flowItem.Raw)

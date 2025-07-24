@@ -45,7 +45,7 @@ type Service struct {
 
 	// Stage 3: Analysis
 
-	analyzers []analysis.AnalysisPass // Collection of analyzers for flow items
+	analysis analysis.Pass
 
 	// Stage 4: Database insertion
 
@@ -91,7 +91,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 	udpAssembler := NewUDPAssembler()
 
-	analyzers := []analysis.AnalysisPass{
+	analysis := analysis.NewSequence(
 		// Order matters here!
 		// Each analyzer will be run on the output of the previous one.
 
@@ -104,7 +104,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 		// ... and finally we humanize the flow items
 		analysis.Humanizer(),
-	}
+	)
 
 	srv := &Service{
 		Config: opts,
@@ -117,7 +117,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 		udpAssembler: udpAssembler,
 
-		analyzers: analyzers,
+		analysis: analysis,
 
 		toDbCh: make(chan db.FlowEntry),
 
@@ -140,6 +140,10 @@ func (a *Service) GetStats() Stats {
 }
 
 func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSource, sourceName string) error {
+
+	slog.DebugContext(ctx, "assembler: starting packet processing", "file", sourceName)
+	slog.DebugContext(ctx, "assembler: analysis configuration", "config", a.analysis)
+
 	var (
 		bytes     int64 = 0     // Total bytes processed
 		position  int64 = 0     // Total packets processed, including skipped
@@ -349,9 +353,7 @@ func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 
 // reassemblyCallback is called when a flow is completed.
 func (a *Service) reassemblyCallback(entry db.FlowEntry) {
-	for _, analysis := range a.analyzers {
-		analysis.Analyze(&entry)
-	}
+	a.analysis.Run(&entry)
 
 	// queue the flow for insertion into the database
 	a.toDbCh <- entry

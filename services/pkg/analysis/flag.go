@@ -25,12 +25,14 @@ type flagPass struct {
 // FlagAnalyzer creates a new flag analyzer pass.
 // The regular expression is used to match flags in the FlowEntry items,
 // in particular in each .Raw field of the .Flow slice.
-func FlagAnalyzer(r *regexp.Regexp) AnalysisPass {
+func FlagAnalyzer(r *regexp.Regexp) Pass {
 	return &flagPass{r: r}
 }
 
-// Analyze implements the Analyzer interface for flagAnalyzer.
-func (a *flagPass) Analyze(entry *db.FlowEntry) error {
+func (a *flagPass) String() string { return "Flag Analyzer" }
+
+// Run implements the Analyzer interface for flagAnalyzer.
+func (a *flagPass) Run(entry *db.FlowEntry) error {
 
 	// for each flow item in the entry, search for flags using the regex
 	for idx := 0; idx < len(entry.Flow); idx++ {

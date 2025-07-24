@@ -54,7 +54,7 @@ func TestSanitizeFlowItemData(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			flow := makeFlowEntry(t, tc.input...)
 			pass := Humanizer()
-			err := pass.Analyze(flow)
+			err := pass.Run(flow)
 			assert.NoError(t, err, "Analyze should not return an error")
 
 			assert.Len(t, flow.Flow, len(tc.expected), "flow length mismatch")

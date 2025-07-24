@@ -37,9 +37,9 @@ type httpPass struct {
 // HttpAnalyzer creates a new HTTP analysis pass.
 //
 // If experimental is true, it will parse cookies and generate fingerprints.
-// If maxDecompressionSize is set to a value greater than 0, it will be used as the maximum size of decompressed body.
-// If maxDecompressionSize is not set or <= 0, it will default to DefaultDecompressionSize (10 MB).
-func HttpAnalyzer(experimental bool, maxDecompressionSize int64) AnalysisPass {
+// If maxDecompressionSize is set to a value greater than 0, it will be used as the
+// maximum size of decompressed body else it will default to DefaultDecompressionSize (10 MB).
+func HttpAnalyzer(experimental bool, maxDecompressionSize int64) Pass {
 	maxSize := DefaultDecompressionSize
 	if maxDecompressionSize > 0 {
 		maxSize = maxDecompressionSize
@@ -51,8 +51,10 @@ func HttpAnalyzer(experimental bool, maxDecompressionSize int64) AnalysisPass {
 	}
 }
 
-// Analyze implements the Analyzer interface for httpAnalyzer.
-func (a *httpPass) Analyze(flow *db.FlowEntry) error {
+func (a *httpPass) String() string { return "HTTP Analyzer" }
+
+// Run implements the Analyzer interface for httpAnalyzer.
+func (a *httpPass) Run(flow *db.FlowEntry) error {
 	// Use a set to get rid of duplicates
 	fingerprints := collections.NewSet[uint32]()
 

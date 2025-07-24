@@ -89,7 +89,7 @@ func TestApplyFlagRegexTags(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			reg := regexp.MustCompile(c.regex)
 			a := FlagAnalyzer(reg)
-			a.Analyze(c.input)
+			a.Run(c.input)
 
 			assert.Equal(t, c.expectedTags, c.input.Tags, "tags should match expected")
 			assert.Equal(t, c.expectedFlags, c.input.Flags, "flags should match expected")
