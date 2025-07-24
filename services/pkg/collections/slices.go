@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-package assembler
+package collections
 
 import "slices"
 
-// appendUnique appends an item to a slice if it is not already present.
-func appendUnique(slice []string, item ...string) []string {
+// AppendUnique appends an item to a slice if it is not already present.
+func AppendUnique(slice []string, item ...string) []string {
 	for _, v := range item {
 		if !slices.Contains(slice, v) {
 			slice = append(slice, v)

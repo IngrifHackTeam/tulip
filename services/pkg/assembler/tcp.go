@@ -30,9 +30,9 @@ var (
 )
 
 const (
-	closeTimeout    time.Duration = time.Hour * 24     // Closing inactive: TODO: from CLI
-	timeout         time.Duration = time.Minute * 5    // Pending bytes: TODO: from CLI
-	streamdoc_limit int           = 6_000_000 - 0x1000 // 16 MB (6 + (4/3)*6) - some overhead
+	closeTimeout   time.Duration = time.Hour * 24     // Closing inactive: TODO: from CLI
+	timeout        time.Duration = time.Minute * 5    // Pending bytes: TODO: from CLI
+	streamdocLimit int           = 6_000_000 - 0x1000 // 16 MB (6 + (4/3)*6) - some overhead
 )
 
 // TcpStreamFactory implements reassembly.StreamFactory for TCP streams.
@@ -153,7 +153,7 @@ func (t *TcpStream) ReassembledSG(
 
 	// We have to make sure to stay under the document limit
 	t.totalSize += length
-	bytes_available := streamdoc_limit - t.totalSize
+	bytes_available := streamdocLimit - t.totalSize
 	if length > bytes_available {
 		length = bytes_available
 	}

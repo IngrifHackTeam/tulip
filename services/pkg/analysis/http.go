@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-package assembler
+package analysis
 
 import (
 	"bufio"
@@ -18,24 +18,43 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"tulip/pkg/collections"
 	"tulip/pkg/db"
 
 	"github.com/andybalholm/brotli"
 )
 
-const DecompressionSizeLimit = int64(streamdoc_limit)
+const DefaultDecompressionSize int64 = 10 * 1024 * 1024 // 10 MB
 
-type HttpAnalyzer struct {
-	Experimental bool // If true, we will parse cookies and generate fingerprints
+type httpPass struct {
+	// If true, we will parse cookies and generate fingerprints
+	Experimental bool
+	// Maximum size of decompressed body, to prevent decompression bombs.
+	// If not set or <= 0, it will default to DefaultDecompressionSize.
+	MaxDecompressionSize int64
 }
 
-// Parse and simplify every item in the flow. Items that were not successfuly
-// parsed are left as-is.
+// HttpAnalyzer creates a new HTTP analysis pass.
 //
-// If we manage to simplify a flow, the new data is placed in flowEntry.data
-func (a *HttpAnalyzer) parseHttpFlow(flow *db.FlowEntry) {
+// If experimental is true, it will parse cookies and generate fingerprints.
+// If maxDecompressionSize is set to a value greater than 0, it will be used as the maximum size of decompressed body.
+// If maxDecompressionSize is not set or <= 0, it will default to DefaultDecompressionSize (10 MB).
+func HttpAnalyzer(experimental bool, maxDecompressionSize int64) AnalysisPass {
+	maxSize := DefaultDecompressionSize
+	if maxDecompressionSize > 0 {
+		maxSize = maxDecompressionSize
+	}
+
+	return &httpPass{
+		Experimental:         experimental,
+		MaxDecompressionSize: maxSize,
+	}
+}
+
+// Analyze implements the Analyzer interface for httpAnalyzer.
+func (a *httpPass) Analyze(flow *db.FlowEntry) error {
 	// Use a set to get rid of duplicates
-	fingerprints := NewSet[uint32]()
+	fingerprints := collections.NewSet[uint32]()
 
 	for idx := range flow.Flow {
 		a.parseHttpFlowItem(flow, idx, fingerprints)
@@ -44,9 +63,11 @@ func (a *HttpAnalyzer) parseHttpFlow(flow *db.FlowEntry) {
 	if a.Experimental {
 		flow.Fingerprints = fingerprints.Items()
 	}
+
+	return nil
 }
 
-func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprints Set[uint32]) {
+func (a *httpPass) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprints collections.Set[uint32]) {
 	flowItem := &flow.Flow[idx]
 	// TODO; rethink the flowItem format to make this less clunky
 	reader := bufio.NewReader(bytes.NewReader(flowItem.Raw))
@@ -59,7 +80,7 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 			return // Failed to fully read the body. Bail out here
 		}
 
-		flow.Tags = appendUnique(flow.Tags, "http")
+		flow.Tags = collections.AppendUnique(flow.Tags, "http")
 
 		if a.Experimental {
 			// Parse cookie and grab fingerprints
@@ -80,7 +101,8 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 
 		// Replace the reader to allow for in-place decompression
 		// Limit the reader to prevent potential decompression bombs
-		req.Body = io.NopCloser(io.LimitReader(newReader, DecompressionSizeLimit))
+		req.Body = io.NopCloser(io.LimitReader(newReader, a.MaxDecompressionSize))
+
 		// invalidate the content length, since decompressing the body will change its value.
 		req.ContentLength = -1
 
@@ -93,7 +115,7 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 		// This can exceed the mongo document limit, so we need to make sure
 		// the replacement will fit
 		newSize := flow.Size + (len(replacement) - len(flowItem.Raw))
-		if newSize <= streamdoc_limit {
+		if int64(newSize) <= a.MaxDecompressionSize {
 			flowItem.Raw = replacement
 			flow.Size = newSize
 		}
@@ -105,7 +127,7 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 			return // Failed to fully read the body. Bail out here
 		}
 
-		flow.Tags = appendUnique(flow.Tags, "http")
+		flow.Tags = collections.AppendUnique(flow.Tags, "http")
 
 		if a.Experimental {
 			// Parse cookie and grab fingerprints
@@ -126,7 +148,13 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 
 		// Replace the reader to allow for in-place decompression
 		// Limit the reader to prevent potential decompression bombs
-		res.Body = io.NopCloser(io.LimitReader(newReader, DecompressionSizeLimit))
+		var maxDecSize int64 = DefaultDecompressionSize
+		if a.MaxDecompressionSize > 0 {
+			maxDecSize = a.MaxDecompressionSize
+		}
+
+		res.Body = io.NopCloser(io.LimitReader(newReader, maxDecSize))
+
 		// invalidate the content length, since decompressing the body will change its value.
 		res.ContentLength = -1
 
@@ -139,14 +167,14 @@ func (a *HttpAnalyzer) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprin
 		// This can exceed the mongo document limit, so we need to make sure
 		// the replacement will fit
 		newSize := flow.Size + (len(replacement) - len(flowItem.Raw))
-		if newSize <= streamdoc_limit {
+		if int64(newSize) <= a.MaxDecompressionSize {
 			flowItem.Raw = replacement
 			flow.Size = newSize
 		}
 	}
 }
 
-func fingerprintsFromCookies(set *Set[uint32], cookies []*http.Cookie) {
+func fingerprintsFromCookies(set *collections.Set[uint32], cookies []*http.Cookie) {
 	for _, cookie := range cookies {
 		checksum := cookieFingerprint(cookie)
 		set.Add(checksum)

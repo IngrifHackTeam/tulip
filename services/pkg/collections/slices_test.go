@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-package assembler
+package collections
 
 import (
 	"testing"
@@ -25,7 +25,7 @@ func TestAppendUnique(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			result := appendUnique(c.input, c.item)
+			result := AppendUnique(c.input, c.item)
 			assert.Equal(t, len(c.expected), len(result), "length mismatch")
 			for i, v := range c.expected {
 				assert.Equal(t, v, result[i], "at index %d", i)

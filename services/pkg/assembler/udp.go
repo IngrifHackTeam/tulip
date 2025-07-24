@@ -179,7 +179,7 @@ func (stream *UdpStream) processSegment(
 	stream.PacketSize += uint(len(udp.Payload))
 
 	// We have to make sure to stay under the document limit
-	available := uint(streamdoc_limit) - stream.PacketSize
+	available := uint(streamdocLimit) - stream.PacketSize
 
 	length := uint(len(udp.Payload))
 

@@ -17,9 +17,9 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
+	"tulip/pkg/analysis"
 	"tulip/pkg/db"
 
 	"github.com/google/gopacket"
@@ -45,7 +45,7 @@ type Service struct {
 
 	// Stage 3: Analysis
 
-	httpAnalyzer *HttpAnalyzer // HTTP analyzer for flow items
+	analyzers []analysis.AnalysisPass // Collection of analyzers for flow items
 
 	// Stage 4: Database insertion
 
@@ -91,6 +91,21 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 	udpAssembler := NewUDPAssembler()
 
+	analyzers := []analysis.AnalysisPass{
+		// Order matters here!
+		// Each analyzer will be run on the output of the previous one.
+
+		// We first try to parse it as HTTP to decompress the body if
+		// it was compressed with gzip or similar.
+		analysis.HttpAnalyzer(opts.Experimental, int64(streamdocLimit)),
+
+		// ... then we search for flags in the flow items
+		analysis.FlagAnalyzer(opts.FlagRegex),
+
+		// ... and finally we humanize the flow items
+		analysis.Humanizer(),
+	}
+
 	srv := &Service{
 		Config: opts,
 
@@ -102,7 +117,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 		udpAssembler: udpAssembler,
 
-		httpAnalyzer: &HttpAnalyzer{Experimental: opts.Experimental},
+		analyzers: analyzers,
 
 		toDbCh: make(chan db.FlowEntry),
 
@@ -334,89 +349,12 @@ func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 
 // reassemblyCallback is called when a flow is completed.
 func (a *Service) reassemblyCallback(entry db.FlowEntry) {
-	// we first try to parse it as HTTP to decompress the body if
-	// it was compressed with gzip or similar.
-	a.httpAnalyzer.parseHttpFlow(&entry)
-
-	// Preprocess the flow items
-	sanitizeFlowItemData(&entry)
-
-	// search for flags in the flow items
-	applyFlagRegexTags(&entry, a.FlagRegex)
+	for _, analysis := range a.analyzers {
+		analysis.Analyze(&entry)
+	}
 
 	// queue the flow for insertion into the database
 	a.toDbCh <- entry
-}
-
-// applyFlagRegexTags searches for flags in flow items using a regex pattern
-// and if found, adds them to the entry's tags and flags.
-//
-// This assumes the `Data` part of the flowItem is already pre-processed,
-// s.t. we can run regex tags over the payload directly.
-func applyFlagRegexTags(entry *db.FlowEntry, flagRegex *regexp.Regexp) {
-	if flagRegex == nil {
-		return
-	}
-
-	// for each flow item in the entry, search for flags using the regex
-	for idx := 0; idx < len(entry.Flow); idx++ {
-		flags, tags := searchForFlagsInItem(&entry.Flow[idx], flagRegex)
-
-		entry.Tags = appendUnique(entry.Tags, tags...)
-		entry.Flags = appendUnique(entry.Flags, flags...)
-	}
-}
-
-// searchForFlagsInItem returns flags and associated tags found in a flow item
-// using the provided regex. It returns empty slices if no flags are found.
-func searchForFlagsInItem(
-	item *db.FlowItem,
-	flagRegex *regexp.Regexp,
-) (flags []string, tags []string) {
-	matches := flagRegex.FindAllSubmatch(item.Raw, -1)
-	if len(matches) == 0 {
-		return // No matches found, skip further processing
-	}
-
-	if item.From == "c" {
-		tags = append(tags, "flag-in")
-	} else {
-		tags = append(tags, "flag-out")
-	}
-
-	// Add the flags
-	for _, match := range matches {
-		var flag string
-		flag = string(match[0])
-		flags = appendUnique(flags, flag)
-	}
-	return
-}
-
-// sanitizeFlowItemData copies the raw data of each flow item into
-// the Data field, replacing non-printable characters with '.'.
-func sanitizeFlowItemData(flow *db.FlowEntry) {
-	for idx := range flow.Flow {
-		flowItem := &flow.Flow[idx]
-		flowItem.Data = sanitizeRawData(flowItem.Raw)
-	}
-}
-
-// sanitizeRawData filters the raw byte slice to only include printable characters,
-// replacing non-printable characters with '.'.
-func sanitizeRawData(raw []byte) string {
-	var b strings.Builder
-	b.Grow(len(raw))
-
-	// Filter the data string down to only printable characters
-	for _, c := range raw {
-		if (c >= 32 && c <= 126) || c == '\t' || c == '\r' || c == '\n' {
-			b.WriteByte(c)
-		} else {
-			b.WriteByte('.') // Replace non-printable characters with '.'
-		}
-	}
-	return b.String()
 }
 
 func (a *Service) handleInsertionQueue() {
