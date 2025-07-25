@@ -18,6 +18,11 @@ import (
 	"tulip/pkg/db"
 )
 
+const (
+	tagFlagIn  = "flag-in"  // Tag for flags coming from the client
+	tagFlagOut = "flag-out" // Tag for flags coming from the server
+)
+
 type flagPass struct {
 	r *regexp.Regexp // Regular expression to match flags
 }
@@ -56,16 +61,17 @@ func searchForFlagsInItem(
 		return // No matches found, skip further processing
 	}
 
-	if item.From == "c" {
-		tags = append(tags, "flag-in")
-	} else {
-		tags = append(tags, "flag-out")
+	// add the relevant tag
+	switch item.From {
+	case db.FlowItemFromServer:
+		tags = collections.AppendUnique(tags, tagFlagOut)
+	case db.FlowItemFromClient:
+		tags = collections.AppendUnique(tags, tagFlagIn)
 	}
 
 	// Add the flags
 	for _, match := range matches {
-		var flag string
-		flag = string(match[0])
+		flag := string(match[0])
 		flags = collections.AppendUnique(flags, flag)
 	}
 	return
