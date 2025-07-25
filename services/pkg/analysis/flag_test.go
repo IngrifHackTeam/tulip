@@ -6,21 +6,12 @@ package analysis
 
 import (
 	"encoding/base64"
-	"regexp"
 	"testing"
 	"tulip/pkg/db"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-func mustDecodeBase64(t *testing.T, s string) string {
-	t.Helper()
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		t.Fatalf("failed to decode base64: %v", err)
-	}
-	return string(decoded)
-}
 
 func TestApplyFlagRegexTags(t *testing.T) {
 
@@ -75,6 +66,16 @@ func TestApplyFlagRegexTags(t *testing.T) {
 			[]string{},
 		},
 		{
+			"real world scenario simplified",
+			makeFlowEntry(
+				"FLAG{1234}",
+				"asdasdas5O0801VBIACLSRPZ6N6KUMP9VRH07AE=",
+			),
+			"[A-Z0-9]{31}=",
+			[]string{"flag-out"},
+			[]string{"5O0801VBIACLSRPZ6N6KUMP9VRH07AE="},
+		},
+		{
 			"real world scenario",
 			makeFlowEntry(
 				"FLAG{1234}",
@@ -87,12 +88,21 @@ func TestApplyFlagRegexTags(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			reg := regexp.MustCompile(c.regex)
-			a := FlagAnalyzer(reg)
-			a.Run(c.input)
+			a, err := FlagAnalyzer(c.regex)
+			require.NoError(t, err, "should create flag analyzer without error")
 
+			a.Run(c.input)
 			assert.Equal(t, c.expectedTags, c.input.Tags, "tags should match expected")
 			assert.Equal(t, c.expectedFlags, c.input.Flags, "flags should match expected")
 		})
 	}
+}
+
+func mustDecodeBase64(t *testing.T, s string) string {
+	t.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatalf("failed to decode base64: %v", err)
+	}
+	return string(decoded)
 }

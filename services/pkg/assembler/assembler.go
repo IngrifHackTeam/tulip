@@ -16,7 +16,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
 	"time"
 	"tulip/pkg/db"
@@ -70,12 +69,11 @@ type Stats struct {
 }
 
 type Config struct {
-	DB            db.Database    // the database to use for storing flows
-	FlushInterval time.Duration  // Interval to flush non-terminated connections
-	FlagRegex     *regexp.Regexp // Regex to apply for flagging flows
-	TcpLazy       bool           // Lazy decoding for TCP packets
-	Experimental  bool           // Experimental features enabled
-	NonStrict     bool           // Non-strict mode for TCP stream assembly
+	DB            db.Database   // the database to use for storing flows
+	FlushInterval time.Duration // Interval to flush non-terminated connections
+	TcpLazy       bool          // Lazy decoding for TCP packets
+	Experimental  bool          // Experimental features enabled
+	NonStrict     bool          // Non-strict mode for TCP stream assembly
 
 	Workers int // Number of workers for TCP/UDP assembly
 

@@ -7,7 +7,7 @@ package collections
 import "slices"
 
 // AppendUnique appends an item to a slice if it is not already present.
-func AppendUnique(slice []string, item ...string) []string {
+func AppendUnique[T comparable](slice []T, item ...T) []T {
 	for _, v := range item {
 		if !slices.Contains(slice, v) {
 			slice = append(slice, v)

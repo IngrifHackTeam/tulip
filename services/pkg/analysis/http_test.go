@@ -77,6 +77,20 @@ func TestBodyDecompressor_UnknownEncoding(t *testing.T) {
 	assert.Equal(t, "test", string(out), "Expected passthrough for unknown encoding")
 }
 
+func TestHttpAnalyzer_ResponseDeflate(t *testing.T) {
+	body := []byte("hello deflate")
+	// Deflate is implemented as gzip in bodyDecompressor, so we use gzip here
+	deflated := makeGzip(t, body)
+	raw := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\n\r\n"), deflated...)
+	flow := &db.FlowEntry{
+		Flow: []db.FlowItem{{Raw: raw, From: "s"}},
+	}
+	analyzer := HttpAnalyzer(false, 0)
+	err := analyzer.Run(flow)
+	assert.NoError(t, err, "Unexpected error")
+	assert.Contains(t, flow.Tags, "http", "Expected 'http' tag")
+}
+
 func makeGzip(t *testing.T, data []byte) []byte {
 	t.Helper()
 	buf := bytes.Buffer{}

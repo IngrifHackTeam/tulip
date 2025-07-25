@@ -43,7 +43,6 @@ func makeTestAssembler(t *testing.T) *Service {
 		TcpLazy:              false,
 		Experimental:         false,
 		NonStrict:            false,
-		FlagRegex:            nil,
 		ConnectionTcpTimeout: 0,
 		ConnectionUdpTimeout: 0,
 	}

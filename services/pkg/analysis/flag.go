@@ -13,9 +13,11 @@
 package analysis
 
 import (
-	"regexp"
+	"fmt"
 	"tulip/pkg/collections"
 	"tulip/pkg/db"
+
+	"github.com/flier/gohs/hyperscan"
 )
 
 const (
@@ -24,14 +26,33 @@ const (
 )
 
 type flagPass struct {
-	r *regexp.Regexp // Regular expression to match flags
+	db      hyperscan.BlockDatabase
+	scratch *hyperscan.Scratch
 }
 
 // FlagAnalyzer creates a new flag analyzer pass.
 // The regular expression is used to match flags in the FlowEntry items,
 // in particular in each .Raw field of the .Flow slice.
-func FlagAnalyzer(r *regexp.Regexp) Pass {
-	return &flagPass{r: r}
+func FlagAnalyzer(expr string) (*flagPass, error) {
+	pattern, err := hyperscan.ParsePattern(fmt.Sprintf("/%s/L", expr))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse hyperscan pattern: %w", err)
+	}
+
+	db, err := hyperscan.NewManagedBlockDatabase(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create hyperscan database: %w", err)
+	}
+
+	s, err := hyperscan.NewManagedScratch(db)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create hyperscan scratch: %w", err)
+	}
+
+	return &flagPass{
+		db:      db,
+		scratch: s,
+	}, nil
 }
 
 func (a *flagPass) String() string { return "Flag Analyzer" }
@@ -39,40 +60,46 @@ func (a *flagPass) String() string { return "Flag Analyzer" }
 // Run implements the Analyzer interface for flagAnalyzer.
 func (a *flagPass) Run(entry *db.FlowEntry) error {
 
-	// for each flow item in the entry, search for flags using the regex
-	for idx := 0; idx < len(entry.Flow); idx++ {
-		flags, tags := searchForFlagsInItem(&entry.Flow[idx], a.r)
+	flags := make([]string, 0)
+	tags := make([]string, 0)
 
-		entry.Tags = collections.AppendUnique(entry.Tags, tags...)
-		entry.Flags = collections.AppendUnique(entry.Flags, flags...)
+	for i := range entry.Flow {
+		flowFlags, flowTags, err := a.runOnFlow(&entry.Flow[i])
+		if err != nil {
+			return fmt.Errorf("failed to run flag pass on flow: %w", err)
+		}
+
+		flags = collections.AppendUnique(flags, flowFlags...)
+		tags = collections.AppendUnique(tags, flowTags...)
 	}
+
+	entry.Flags = collections.AppendUnique(entry.Flags, flags...)
+	entry.Tags = collections.AppendUnique(entry.Tags, tags...)
 
 	return nil
 }
 
-// searchForFlagsInItem returns flags and associated tags found in a flow item
-// using the provided regex. It returns empty slices if no flags are found.
-func searchForFlagsInItem(
-	item *db.FlowItem,
-	flagRegex *regexp.Regexp,
-) (flags []string, tags []string) {
-	matches := flagRegex.FindAll(item.Raw, -1)
-	if len(matches) == 0 {
-		return // No matches found, skip further processing
-	}
+func (a *flagPass) runOnFlow(flow *db.FlowItem) (flags []string, tags []string, err error) {
 
-	// add the relevant tag
-	switch item.From {
-	case db.FlowItemFromServer:
-		tags = collections.AppendUnique(tags, tagFlagOut)
-	case db.FlowItemFromClient:
-		tags = collections.AppendUnique(tags, tagFlagIn)
-	}
+	handler := hyperscan.MatchHandler(func(id uint, from, to uint64, matchFlags uint, context any) error {
 
-	// Add the flags
-	for _, match := range matches {
-		flag := string(match)
+		flag := string(flow.Raw[from:to])
 		flags = collections.AppendUnique(flags, flag)
+
+		switch flow.From {
+		case db.FlowItemFromServer:
+			tags = collections.AppendUnique(tags, tagFlagOut)
+		case db.FlowItemFromClient:
+			tags = collections.AppendUnique(tags, tagFlagIn)
+		}
+
+		return nil
+	})
+
+	// Scan the raw data with the handler
+	if err := a.db.Scan(flow.Raw, a.scratch, handler, nil); err != nil {
+		return nil, nil, fmt.Errorf("failed to scan flow item with hyperscan: %w", err)
 	}
+
 	return
 }

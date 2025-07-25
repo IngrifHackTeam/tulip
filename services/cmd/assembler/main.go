@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -126,17 +125,6 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	slog.Info("Configuring MongoDB database...")
 	gDB.ConfigureDatabase()
 
-	// Parse flag regex if provided
-	var flagRegex *regexp.Regexp
-	if flagRegexStr != "" {
-		var err error
-		flagRegex, err = regexp.Compile(flagRegexStr)
-		if err != nil {
-			slog.Error("Invalid flag regex", slog.String("regex", flagRegexStr), slog.Any("err", err))
-			os.Exit(1)
-		}
-	}
-
 	// Parse flush interval
 	var flushInterval time.Duration
 	if flushIntervalStr != "" {
@@ -170,7 +158,6 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		TcpLazy:              tcpLazy,
 		Experimental:         experimental,
 		NonStrict:            nonstrict,
-		FlagRegex:            flagRegex,
 		FlushInterval:        flushInterval,
 		ConnectionTcpTimeout: connectionTimeout,
 		ConnectionUdpTimeout: connectionTimeout,
@@ -182,6 +169,12 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	// create a new assembler service instance
 	service := assembler.NewAssemblerService(ctx, config)
 
+	flagAnalyzer, err := analysis.FlagAnalyzer(flagRegexStr)
+	if err != nil {
+		slog.Error("Failed to create flag analyzer", slog.Any("err", err))
+		os.Exit(1)
+	}
+
 	analysisPipeline := analysis.NewSequence(
 		// Order matters here!
 		// Each analyzer will be run on the output of the previous one.
@@ -191,7 +184,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		analysis.HttpAnalyzer(experimental, int64(streamdocLimit)),
 
 		// ... then we search for flags in the flow items
-		analysis.FlagAnalyzer(flagRegex),
+		flagAnalyzer,
 
 		// ... and finally we humanize the flow items
 		analysis.Humanizer(),
@@ -249,7 +242,6 @@ func watchForPcaps(ctx context.Context, watchDir string, pcapChan chan<- string)
 			continue
 		}
 
-
 		for i, file := range files {
 			select {
 			case <-ctx.Done():
@@ -273,6 +265,8 @@ func watchForPcaps(ctx context.Context, watchDir string, pcapChan chan<- string)
 			slog.Info("ingesting new PCAP file", slog.String("file", fullPath), "idx", i+1, "of", len(files))
 			pcapChan <- fullPath
 		}
+
+		slog.Info("waiting for new PCAP files", "wait", pollInterval)
 		time.Sleep(pollInterval)
 	}
 }
