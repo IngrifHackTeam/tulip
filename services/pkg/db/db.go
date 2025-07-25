@@ -18,12 +18,23 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+type FlowItemFrom = string
+
+const (
+	FlowItemFromServer = "s" // Flow item from server
+	FlowItemFromClient = "c" // Flow item from client
+)
+
 // Added a flow struct
 type FlowItem struct {
-	From string `bson:"from" json:"from"` // From: "s" / "c" for server or client
-	Data string `bson:"data" json:"data"` // Data, in a somewhat readable format
-	Raw  []byte `bson:"raw" json:"b64"`   // The raw data, in bytes. The `b64` tag is used because this is base64 encoded in the frontend
-	Time int    `bson:"time" json:"time"` // Timestamp of the first packet in the flow (Epoch / ms)
+	// From: "s" / "c" for server or client
+	From FlowItemFrom `bson:"from" json:"from"`
+	// Data, in a somewhat readable format
+	Data string `bson:"data" json:"data"`
+	// The raw data, in bytes. The `b64` tag is used because this is base64 encoded in the frontend
+	Raw []byte `bson:"raw" json:"b64"`
+	// Timestamp of the first packet in the flow (Epoch / ms)
+	Time int `bson:"time" json:"time"`
 }
 
 type FlowEntry struct {
@@ -34,7 +45,7 @@ type FlowEntry struct {
 	DstIp        string             `bson:"dst_ip" json:"dst_ip"`           // Destination IP address
 	Time         int                `bson:"time" json:"time"`               // Timestamp (epoch)
 	Duration     int                `bson:"duration" json:"duration"`       // Duration in milliseconds
-	NumPackets  int                `bson:"num_packets" json:"num_packets"` // Number of packets
+	NumPackets   int                `bson:"num_packets" json:"num_packets"` // Number of packets
 	Blocked      bool               `bson:"blocked" json:"blocked"`
 	Filename     string             `bson:"filename" json:"filename"` // Name of the pcap file this flow was captured in
 	Fingerprints []uint32           `bson:"fingerprints" json:"fingerprints"`
