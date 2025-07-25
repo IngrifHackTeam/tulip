@@ -206,11 +206,6 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	// 2. Assemble PCAP packets and create flows
 	go func() {
 		for fullPath := range pcapChan {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
 			processPcapFile(ctx, service, fullPath)
 		}
 	}()
