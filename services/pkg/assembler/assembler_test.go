@@ -60,38 +60,6 @@ func TestDefragPacket_NoIPv4Layer_ReturnsComplete(t *testing.T) {
 	assert.True(t, complete, "should be complete if no IPv4 layer")
 }
 
-type fakeDefragmenter struct {
-	defragIPv4Func func(ip4 *layers.IPv4) (*layers.IPv4, error)
-}
-
-func (f *fakeDefragmenter) DefragIPv4(ip4 *layers.IPv4) (*layers.IPv4, error) {
-	return f.defragIPv4Func(ip4)
-}
-
-func makeIPv4Packet(payload []byte, fragOffset uint16, moreFragments bool, totalLen uint16) gopacket.Packet {
-	ip4 := &layers.IPv4{
-		Version:    4,
-		IHL:        5,
-		Length:     totalLen,
-		Id:         1234,
-		Flags:      layers.IPv4MoreFragments,
-		FragOffset: fragOffset,
-		Protocol:   layers.IPProtocolTCP,
-		SrcIP:      []byte{1, 2, 3, 4},
-		DstIP:      []byte{5, 6, 7, 8},
-	}
-	if !moreFragments {
-		ip4.Flags = 0
-	}
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{}
-	_ = ip4.SerializeTo(buf, opts)
-	serialized := buf.Bytes()
-	// Append payload manually
-	serialized = append(serialized, payload...)
-	packet := gopacket.NewPacket(serialized, layers.LayerTypeIPv4, gopacket.Default)
-	return packet
-}
 func TestDefragPacket_FragmentedPacket(t *testing.T) {
 	assembler := makeTestAssembler(t)
 
@@ -137,8 +105,8 @@ func TestDefragPacket_FragmentedPacket(t *testing.T) {
 	assembler.defragmenter = ip4defrag.NewIPv4Defragmenter()
 
 	complete, err := assembler.defragPacket(packet1)
+	assert.NoError(t, err, "defragPacket should not return an error")
 	assert.False(t, complete, "should not be complete if fragment not reassembled")
-	// Do not assert NoError, as incomplete fragments may return an error
 
 	complete, err = assembler.defragPacket(packet2)
 	assert.True(t, complete, "should be complete if fragment reassembled")
@@ -171,24 +139,6 @@ func TestDefragPacket_DefragError_ReturnsError(t *testing.T) {
 	complete, err := assembler.defragPacket(packet)
 	assert.False(t, complete, "should not be complete if defrag error")
 	assert.Error(t, err, "should return an error for invalid fragment")
-}
-
-type fakePacketBuilder struct {
-	nextLayerDecoded bool
-}
-
-func (f *fakePacketBuilder) AddLayer(gopacket.Layer)       {}
-func (f *fakePacketBuilder) NextDecoder() gopacket.Decoder { return nil }
-func (f *fakePacketBuilder) DecodeLayerPayload(gopacket.Decoder, []byte) error {
-	f.nextLayerDecoded = true
-	return nil
-}
-
-type fakeDecoder struct{ called bool }
-
-func (f *fakeDecoder) Decode([]byte, gopacket.PacketBuilder) error {
-	f.called = true
-	return nil
 }
 
 func TestDefragPacket_CompletePacket_DecodesNextLayer(t *testing.T) {
@@ -228,4 +178,39 @@ func TestDefragPacket_CompletePacket_DecodesNextLayer(t *testing.T) {
 	// Check that TCP layer is present
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	assert.NotNil(t, tcpLayer, "TCP layer should be decoded after IPv4 defrag")
+}
+
+func TestGetWorkerQueue_Distribution(t *testing.T) {
+	assembler := makeTestAssembler(t)
+	assembler.numWorkers = 4
+	assembler.workerQueues = make([]chan QueueItem, assembler.numWorkers)
+	for i := range assembler.workerQueues {
+		assembler.workerQueues[i] = make(chan QueueItem)
+	}
+
+	// Create flows with different byte values
+	for i := 0; i < 8; i++ {
+		src := []byte{byte(i), 0, 0, 0}
+		dst := []byte{0, byte(i), 0, 0}
+		flow := gopacket.NewFlow(layers.EndpointIPv4, src, dst)
+		idx := int(flow.FastHash() % uint64(assembler.numWorkers))
+		queue := assembler.getWorkerQueue(flow)
+		assert.Equal(t, assembler.workerQueues[idx], queue, "Queue index mismatch for flow %d", i)
+	}
+}
+
+func TestGetWorkerQueue_ConsistentIndex(t *testing.T) {
+	assembler := makeTestAssembler(t)
+	assembler.numWorkers = 3
+	assembler.workerQueues = make([]chan QueueItem, assembler.numWorkers)
+	for i := range assembler.workerQueues {
+		assembler.workerQueues[i] = make(chan QueueItem)
+	}
+
+	src := []byte{7, 0, 0, 0}
+	dst := []byte{0, 7, 0, 0}
+	flow := gopacket.NewFlow(layers.EndpointIPv4, src, dst)
+	queue1 := assembler.getWorkerQueue(flow)
+	queue2 := assembler.getWorkerQueue(flow)
+	assert.Equal(t, queue1, queue2, "getWorkerQueue should return the same queue for the same flow")
 }

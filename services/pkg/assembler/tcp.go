@@ -20,13 +20,6 @@ import (
 	"github.com/google/gopacket/reassembly"
 )
 
-var (
-	allowmissinginit = true
-	verbose          = false
-	debug            = false
-	quiet            = true
-)
-
 // TcpStreamFactory implements reassembly.StreamFactory for TCP streams.
 type TcpStreamFactory struct {
 	OnComplete     func(db.FlowEntry) // Callback to call when the stream is complete
