@@ -506,7 +506,7 @@ func convertFlowToHTTPRequests(flow *db.FlowEntry, tokenize, useSession bool) (s
 		b.WriteString("s = requests.Session()\n")
 	}
 	for _, msg := range flow.Flow {
-		if msg.From == "c" {
+		if msg.From == db.FlowItemFromClient {
 			req, data, dataParam, headers, err := decodeHTTPRequest(msg.Raw, tokenize)
 			if err != nil {
 				return "", err
@@ -614,7 +614,7 @@ func flowToPwn(flow *db.FlowEntry) string {
 	b.WriteString(fmt.Sprintf("proc = remote(host, %d)\n", flow.DstPort))
 	for _, msg := range flow.Flow {
 		data := msg.Raw
-		if msg.From == "c" {
+		if msg.From == db.FlowItemFromClient {
 			b.WriteString(fmt.Sprintf("proc.write(b\"%s\")\n", escapeBytes(data)))
 		} else {
 			// Show last 10 bytes for server messages

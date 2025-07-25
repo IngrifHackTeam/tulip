@@ -164,11 +164,11 @@ func (t *TcpStream) ReassembledSG(
 		length = 0
 	}
 
-	var from string
+	var from db.FlowItemFrom
 	if dir == reassembly.TCPDirClientToServer {
-		from = "c"
+		from = db.FlowItemFromClient
 	} else {
-		from = "s"
+		from = db.FlowItemFromServer
 	}
 
 	// consolidate subsequent elements from the same origin

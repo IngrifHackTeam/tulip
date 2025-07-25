@@ -18,16 +18,16 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type FlowItemFrom = string
+type FlowItemFrom string
 
 const (
-	FlowItemFromServer = "s" // Flow item from server
-	FlowItemFromClient = "c" // Flow item from client
+	FlowItemFromServer FlowItemFrom = "s" // Flow item from server
+	FlowItemFromClient FlowItemFrom = "c" // Flow item from client
 )
 
 // Added a flow struct
 type FlowItem struct {
-	// From: "s" / "c" for server or client
+	// From can be FlowItemFromClient or FlowItemFromServer
 	From FlowItemFrom `bson:"from" json:"from"`
 	// Data, in a somewhat readable format
 	Data string `bson:"data" json:"data"`

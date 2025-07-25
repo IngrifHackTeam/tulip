@@ -26,13 +26,13 @@ func TestApplyFlagRegexTags(t *testing.T) {
 
 	makeFlowEntry := func(data ...string) *db.FlowEntry {
 		flowItems := make([]db.FlowItem, len(data))
-		nextFrom := "c"
+		nextFrom := db.FlowItemFromClient
 		for i, d := range data {
 			flowItems[i] = db.FlowItem{Raw: []byte(d), From: nextFrom}
-			if nextFrom == "s" {
-				nextFrom = "c"
+			if nextFrom == db.FlowItemFromServer {
+				nextFrom = db.FlowItemFromClient
 			} else {
-				nextFrom = "s"
+				nextFrom = db.FlowItemFromServer
 			}
 		}
 

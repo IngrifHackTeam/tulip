@@ -70,11 +70,11 @@ func main() {
 	}
 }
 
-func strToClientServer(str string) string {
+func strToClientServer(str db.FlowItemFrom) string {
 	switch str {
-	case "c":
+	case db.FlowItemFromClient:
 		return "Client to Server"
-	case "s":
+	case db.FlowItemFromServer:
 		return "Server to Client"
 	default:
 		return "Unknown Direction"

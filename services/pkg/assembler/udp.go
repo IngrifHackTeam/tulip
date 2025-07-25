@@ -129,7 +129,7 @@ func completeReassembly(stream *UdpStream) *db.FlowEntry {
 		DstPort:      int(stream.portDst),
 		Time:         startTime,
 		Duration:     duration,
-		NumPackets:  int(stream.PacketCount),
+		NumPackets:   int(stream.PacketCount),
 		Blocked:      false,
 		Tags:         []string{"udp"},
 		Suricata:     []string{},
@@ -173,9 +173,9 @@ func (stream *UdpStream) processSegment(
 		return // skip empty segments
 	}
 
-	from := "s"
+	from := db.FlowItemFromServer
 	if flow.Dst().FastHash() == stream.netSrc.FastHash() {
-		from = "c"
+		from = db.FlowItemFromClient
 	}
 
 	stream.LastSeen = captureInfo.Timestamp
