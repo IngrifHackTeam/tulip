@@ -33,3 +33,23 @@ func TestAppendUnique(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkAppendUnique(b *testing.B) {
+	slice := make([]string, 0, 1000)
+	for i := range 1000 {
+		if i%10 == 0 {
+			slice = append(slice, "dup")
+		} else {
+			slice = append(slice, string(rune('a'+(i%26))))
+		}
+	}
+
+	// Prepare a set of items to append, some duplicates, some new
+	items := []string{"dup", "z", "a", "new1", "new2", "b", "dup", "new3"}
+
+	for i := 0; b.Loop(); i++ {
+		// Cycle through items to append
+		item := items[i%len(items)]
+		_ = AppendUnique(slice, item)
+	}
+}
