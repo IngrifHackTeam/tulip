@@ -30,15 +30,15 @@ var (
 )
 
 const (
-	closeTimeout   time.Duration = time.Hour * 24     // Closing inactive: TODO: from CLI
-	timeout        time.Duration = time.Minute * 5    // Pending bytes: TODO: from CLI
-	streamdocLimit int           = 6_000_000 - 0x1000 // 16 MB (6 + (4/3)*6) - some overhead
+	closeTimeout time.Duration = time.Hour * 24  // Closing inactive: TODO: from CLI
+	timeout      time.Duration = time.Minute * 5 // Pending bytes: TODO: from CLI
 )
 
 // TcpStreamFactory implements reassembly.StreamFactory for TCP streams.
 type TcpStreamFactory struct {
-	OnComplete func(db.FlowEntry)
-	nonStrict  bool // non-strict mode, used for testing
+	OnComplete     func(db.FlowEntry)
+	nonStrict      bool // non-strict mode, used for testing
+	streamdocLimit int  // Limit for the size of the stream document in MongoDB
 }
 
 func (f *TcpStreamFactory) New(
@@ -60,8 +60,9 @@ func (f *TcpStreamFactory) New(
 	}
 
 	stream := &TcpStream{
-		tcpFSM:    reassembly.NewTCPSimpleFSM(fsmOptions),
-		tcpFSMErr: false,
+		tcpFSM:         reassembly.NewTCPSimpleFSM(fsmOptions),
+		tcpFSMErr:      false,
+		streamdocLimit: f.streamdocLimit,
 
 		net:       net,
 		transport: transport,
@@ -84,6 +85,8 @@ func (f *TcpStreamFactory) New(
 //  2. Call ReassembledSG 0 or more times, passing in reassembled TCP data in order
 //  3. Call ReassemblyComplete one time, after which the stream is dereferenced by assembly.
 type TcpStream struct {
+	streamdocLimit int // Limit for the size of the stream document in MongoDB
+
 	tcpFSM    *reassembly.TCPSimpleFSM
 	tcpFSMErr bool
 
@@ -153,7 +156,7 @@ func (t *TcpStream) ReassembledSG(
 
 	// We have to make sure to stay under the document limit
 	t.totalSize += length
-	bytes_available := streamdocLimit - t.totalSize
+	bytes_available := t.streamdocLimit - t.totalSize
 	if length > bytes_available {
 		length = bytes_available
 	}
@@ -217,7 +220,7 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 	if len(t.flowItems) == 0 {
 		// No point in inserting this element, it has no data and even if we wanted to,
 		// we can't timestamp it so the front-end can't display it either
-		return false
+		return true
 	}
 
 	time = t.flowItems[0].Time
@@ -239,6 +242,11 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 		Size:        t.totalSize,
 		Flags:       make([]string, 0),
 		Flagids:     make([]string, 0),
+	}
+
+	rawarr := make([]byte, 0)
+	for _, item := range t.flowItems {
+		rawarr = append(rawarr, item.Raw...)
 	}
 
 	t.onComplete(entry)

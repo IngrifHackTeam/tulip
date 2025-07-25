@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"tulip/pkg/analysis"
 	"tulip/pkg/assembler"
 	"tulip/pkg/db"
 
@@ -38,6 +39,8 @@ import (
 )
 
 var gDB db.Database
+
+const streamdocLimit = 6_000_000 - 0x1000 // 16 MB (6 + (4/3)*6) - some overhead
 
 var rootCmd = &cobra.Command{
 	Use:   "assembler",
@@ -171,20 +174,74 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		ConnectionTcpTimeout: connectionTimeout,
 		ConnectionUdpTimeout: connectionTimeout,
 		FlagIdUrl:            flagIdUrl,
+		StreamdocLimit:       streamdocLimit,
 	}
+
+	// create a new assembler service instance
+	service := assembler.NewAssemblerService(ctx, config)
+
+	analysisPipeline := analysis.NewSequence(
+		// Order matters here!
+		// Each analyzer will be run on the output of the previous one.
+
+		// We first try to parse it as HTTP to decompress the body if
+		// it was compressed with gzip or similar.
+		analysis.HttpAnalyzer(experimental, int64(streamdocLimit)),
+
+		// ... then we search for flags in the flow items
+		analysis.FlagAnalyzer(flagRegex),
+
+		// ... and finally we humanize the flow items
+		analysis.Humanizer(),
+	)
+
+	var (
+		pcapChan     = make(chan string) // Synchronous channel for PCAP file paths
+		analyzedChan = make(chan db.FlowEntry, 100)
+	)
+
+	// 1. Watch the directory for new PCAP files and push them to the pcapChan
+	go watchForPcaps(ctx, watchDir, pcapChan)
+
+	// 2. Assemble PCAP packets and create flows
+	go func() {
+		for fullPath := range pcapChan {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			processPcapFile(ctx, service, fullPath)
+		}
+	}()
+
+	// 2. Analyze entries and queue them for insertion into the database
+	go func() {
+		for entry := range service.Assembled() {
+			if err := analysisPipeline.Run(&entry); err != nil {
+				slog.Warn("Failed to run analysis pipeline", slog.Any("err", err))
+			}
+			analyzedChan <- entry // Send the entry to the insertion queue
+		}
+	}()
+
+	// 3. Insert assembled flows into the database
+	go processDbChan(analyzedChan)
+
+	<-ctx.Done() // Wait for context cancellation
+	slog.Info("Shutting down assembler service...")
+}
+
+func watchForPcaps(ctx context.Context, watchDir string, pcapChan chan<- string) {
 
 	// Use polling for simplicity and reliability
 	pollInterval := 2 * time.Second
 	seen := make(map[string]struct{})
 
-	// create a new assembler service instance
-	service := assembler.NewAssemblerService(ctx, config)
-
-watchLoop:
 	for {
 		select {
 		case <-ctx.Done():
-			break watchLoop
+			return
 		default:
 		}
 
@@ -197,7 +254,7 @@ watchLoop:
 		for _, file := range files {
 			select {
 			case <-ctx.Done():
-				break watchLoop
+				return
 			default:
 			}
 
@@ -215,7 +272,7 @@ watchLoop:
 			seen[fullPath] = struct{}{}
 
 			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
-			processPcapFile(ctx, service, fullPath)
+			pcapChan <- fullPath
 		}
 		time.Sleep(pollInterval)
 	}
@@ -285,6 +342,53 @@ func processPcapReader(ctx context.Context, s *assembler.Service, handle *pcapgo
 	source.NoCopy = true
 
 	return s.ProcessPacketSrc(ctx, source, fname)
+}
+
+func processDbChan(assembled <-chan db.FlowEntry) {
+	// we debounce the insertion of flows into the database
+	// by collecting them in a queue and inserting them in batches
+
+	queueSize := 200
+	queue := make([]db.FlowEntry, 0, queueSize)
+
+	for {
+		select {
+		case entry, ok := <-assembled:
+			if !ok {
+				// Channel closed, insert any remaining entries in the queue
+				if len(queue) > 0 {
+					insertFlows(queue)
+				}
+				return
+			}
+
+			// Add the entry to the queue
+			queue = append(queue, entry)
+			if len(queue) >= queueSize {
+				insertFlows(queue)
+				queue = queue[:0] // Clear the queue
+			}
+
+		case <-time.After(500 * time.Millisecond):
+			// If the timer ticks, insert all entries in the queue
+			if len(queue) > 0 {
+				insertFlows(queue)
+				queue = queue[:0] // Clear the queue
+			}
+		}
+	}
+
+}
+
+func insertFlows(flows []db.FlowEntry) {
+	if len(flows) == 0 {
+		return
+	}
+
+	err := gDB.InsertFlows(context.Background(), flows)
+	if err != nil {
+		slog.Error("Failed to insert flows into database", "err", err)
+	}
 }
 
 func main() {

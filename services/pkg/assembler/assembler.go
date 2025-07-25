@@ -19,7 +19,6 @@ import (
 	"regexp"
 	"sync"
 	"time"
-	"tulip/pkg/analysis"
 	"tulip/pkg/db"
 
 	"github.com/google/gopacket"
@@ -43,13 +42,9 @@ type Service struct {
 
 	udpAssembler *UDPAssembler
 
-	// Stage 3: Analysis
+	// Stage 3: returning assembled flows
 
-	analysis analysis.Pass
-
-	// Stage 4: Database insertion
-
-	toDbCh chan db.FlowEntry // Channel for processed flow entries
+	assembled chan db.FlowEntry // Channel for processed flow entries
 
 	// Misc state
 
@@ -75,12 +70,13 @@ type Config struct {
 	ConnectionTcpTimeout time.Duration
 	ConnectionUdpTimeout time.Duration
 
-	FlagIdUrl string // URL del servizio flagid
+	FlagIdUrl      string // URL del servizio flagid
+	StreamdocLimit int    // Limit for streamdoc size, used in analysis
 }
 
 func NewAssemblerService(ctx context.Context, opts Config) *Service {
 	var (
-		tcpStreamFactory = &TcpStreamFactory{nonStrict: opts.NonStrict}
+		tcpStreamFactory = &TcpStreamFactory{nonStrict: opts.NonStrict, streamdocLimit: opts.StreamdocLimit}
 		tcpStreamPool    = reassembly.NewStreamPool(tcpStreamFactory)
 		tcpAssembler     = reassembly.NewAssembler(tcpStreamPool)
 	)
@@ -89,22 +85,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 		opts.FlushInterval = 5 * time.Second // Default flush interval if not set
 	}
 
-	udpAssembler := NewUDPAssembler()
-
-	analysis := analysis.NewSequence(
-		// Order matters here!
-		// Each analyzer will be run on the output of the previous one.
-
-		// We first try to parse it as HTTP to decompress the body if
-		// it was compressed with gzip or similar.
-		analysis.HttpAnalyzer(opts.Experimental, int64(streamdocLimit)),
-
-		// ... then we search for flags in the flow items
-		analysis.FlagAnalyzer(opts.FlagRegex),
-
-		// ... and finally we humanize the flow items
-		analysis.Humanizer(),
-	)
+	udpAssembler := NewUDPAssembler(opts.StreamdocLimit)
 
 	srv := &Service{
 		Config: opts,
@@ -117,9 +98,7 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 
 		udpAssembler: udpAssembler,
 
-		analysis: analysis,
-
-		toDbCh: make(chan db.FlowEntry),
+		assembled: make(chan db.FlowEntry),
 
 		flushTick: time.NewTicker(opts.FlushInterval),
 	}
@@ -127,9 +106,12 @@ func NewAssemblerService(ctx context.Context, opts Config) *Service {
 	onComplete := func(fe db.FlowEntry) { srv.reassemblyCallback(fe) }
 	srv.tcpStreamFactory.OnComplete = onComplete
 
-	go srv.handleInsertionQueue()
-
 	return srv
+}
+
+// Assembled returns a channel that emits assembled flow entries.
+func (s *Service) Assembled() <-chan db.FlowEntry {
+	return s.assembled
 }
 
 func (a *Service) GetStats() Stats {
@@ -142,7 +124,6 @@ func (a *Service) GetStats() Stats {
 func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSource, sourceName string) error {
 
 	slog.DebugContext(ctx, "assembler: starting packet processing", "file", sourceName)
-	slog.DebugContext(ctx, "assembler: analysis configuration", "config", a.analysis)
 
 	var (
 		bytes     int64 = 0     // Total bytes processed
@@ -353,56 +334,5 @@ func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 
 // reassemblyCallback is called when a flow is completed.
 func (a *Service) reassemblyCallback(entry db.FlowEntry) {
-	a.analysis.Run(&entry)
-
-	// queue the flow for insertion into the database
-	a.toDbCh <- entry
-}
-
-func (a *Service) handleInsertionQueue() {
-	queueSize := 200
-
-	queue := make([]db.FlowEntry, 0, queueSize)
-
-	// we debounce the insertion of flows into the database
-	// by collecting them in a queue and inserting them in batches
-
-	for {
-		select {
-		case entry, ok := <-a.toDbCh:
-			if !ok {
-				// Channel closed, insert any remaining entries in the queue
-				if len(queue) > 0 {
-					a.insertFlows(queue)
-				}
-				return
-			}
-
-			// Add the entry to the queue
-			queue = append(queue, entry)
-			if len(queue) >= queueSize {
-				a.insertFlows(queue)
-				queue = queue[:0] // Clear the queue
-			}
-
-		case <-time.After(500 * time.Millisecond):
-			// If the timer ticks, insert all entries in the queue
-			if len(queue) > 0 {
-				a.insertFlows(queue)
-				queue = queue[:0] // Clear the queue
-			}
-		}
-	}
-
-}
-
-func (a *Service) insertFlows(flows []db.FlowEntry) {
-	if len(flows) == 0 {
-		return
-	}
-
-	err := a.DB.InsertFlows(context.Background(), flows)
-	if err != nil {
-		slog.Error("Failed to insert flows into database", "err", err)
-	}
+	a.assembled <- entry
 }

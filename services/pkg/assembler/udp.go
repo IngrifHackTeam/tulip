@@ -57,12 +57,14 @@ func NewUdpStreamId(e1, e2 gopacket.Endpoint, p1, p2 layers.UDPPort) UdpStreamId
 // It tries to adhere to the same interface as TCPAssembler, allowing it to be used in a similar way.
 // It maintains a map of active UDP streams, identified by their endpoints and ports.
 type UDPAssembler struct {
-	streams map[UdpStreamId]*UdpStream
+	streamdocLimit int // Limit for the size of the stream document in MongoDB
+	streams        map[UdpStreamId]*UdpStream
 }
 
-func NewUDPAssembler() *UDPAssembler {
+func NewUDPAssembler(streamdocLimit int) *UDPAssembler {
 	return &UDPAssembler{
-		streams: map[UdpStreamId]*UdpStream{},
+		streamdocLimit: streamdocLimit,
+		streams:        map[UdpStreamId]*UdpStream{},
 	}
 }
 
@@ -70,7 +72,7 @@ func (a *UDPAssembler) getOrCreateUdpStream(id UdpStreamId) *UdpStream {
 	// get or create the stream
 	stream, ok := a.streams[id]
 	if !ok {
-		stream = &UdpStream{Items: make([]db.FlowItem, 0)}
+		stream = &UdpStream{Items: make([]db.FlowItem, 0), streamdocLimit: a.streamdocLimit}
 		a.streams[id] = stream
 	}
 	return stream
@@ -143,6 +145,8 @@ func completeReassembly(stream *UdpStream) *db.FlowEntry {
 // UdpStream represents a sequence of UDP packets between two endpoints,
 // identified by their endpoints and ports.
 type UdpStream struct {
+	streamdocLimit int
+
 	netSrc  gopacket.Endpoint // Network layer source endpoint (IP) of the first packet in the stream
 	netDst  gopacket.Endpoint // Network layer destination endpoint (IP) of the first packet in the stream
 	portSrc layers.UDPPort    // Source port of the UDP stream
@@ -179,7 +183,7 @@ func (stream *UdpStream) processSegment(
 	stream.PacketSize += uint(len(udp.Payload))
 
 	// We have to make sure to stay under the document limit
-	available := uint(streamdocLimit) - stream.PacketSize
+	available := uint(stream.streamdocLimit) - stream.PacketSize
 
 	length := uint(len(udp.Payload))
 
