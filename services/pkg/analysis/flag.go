@@ -56,7 +56,7 @@ func searchForFlagsInItem(
 	item *db.FlowItem,
 	flagRegex *regexp.Regexp,
 ) (flags []string, tags []string) {
-	matches := flagRegex.FindAllSubmatch(item.Raw, -1)
+	matches := flagRegex.FindAll(item.Raw, -1)
 	if len(matches) == 0 {
 		return // No matches found, skip further processing
 	}
@@ -71,7 +71,7 @@ func searchForFlagsInItem(
 
 	// Add the flags
 	for _, match := range matches {
-		flag := string(match[0])
+		flag := string(match)
 		flags = collections.AppendUnique(flags, flag)
 	}
 	return

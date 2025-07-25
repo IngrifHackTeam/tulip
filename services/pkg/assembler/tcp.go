@@ -15,8 +15,6 @@ import (
 	"sync"
 	"tulip/pkg/db"
 
-	"time"
-
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/reassembly"
@@ -29,16 +27,11 @@ var (
 	quiet            = true
 )
 
-const (
-	closeTimeout time.Duration = time.Hour * 24  // Closing inactive: TODO: from CLI
-	timeout      time.Duration = time.Minute * 5 // Pending bytes: TODO: from CLI
-)
-
 // TcpStreamFactory implements reassembly.StreamFactory for TCP streams.
 type TcpStreamFactory struct {
-	OnComplete     func(db.FlowEntry)
-	nonStrict      bool // non-strict mode, used for testing
-	streamdocLimit int  // Limit for the size of the stream document in MongoDB
+	OnComplete     func(db.FlowEntry) // Callback to call when the stream is complete
+	NonStrict      bool               // non-strict mode, used for testing
+	StreamdocLimit int                // Limit for the size of the stream document in MongoDB
 }
 
 func (f *TcpStreamFactory) New(
@@ -56,13 +49,13 @@ func (f *TcpStreamFactory) New(
 	fname := context.FileName
 
 	fsmOptions := reassembly.TCPSimpleFSMOptions{
-		SupportMissingEstablishment: f.nonStrict,
+		SupportMissingEstablishment: f.NonStrict,
 	}
 
 	stream := &TcpStream{
 		tcpFSM:         reassembly.NewTCPSimpleFSM(fsmOptions),
 		tcpFSMErr:      false,
-		streamdocLimit: f.streamdocLimit,
+		streamdocLimit: f.StreamdocLimit,
 
 		net:       net,
 		transport: transport,
@@ -73,7 +66,7 @@ func (f *TcpStreamFactory) New(
 		srcPort:    tcp.SrcPort,
 		dstPort:    tcp.DstPort,
 		onComplete: f.OnComplete,
-		nonStrict:  f.nonStrict,
+		nonStrict:  f.NonStrict,
 	}
 	return stream
 }
@@ -227,21 +220,21 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 	duration = t.flowItems[len(t.flowItems)-1].Time - time
 
 	entry := db.FlowEntry{
-		SrcPort:     int(t.srcPort),
-		DstPort:     int(t.dstPort),
-		SrcIp:       src.String(),
-		DstIp:       dst.String(),
-		Time:        time,
-		Duration:    duration,
+		SrcPort:    int(t.srcPort),
+		DstPort:    int(t.dstPort),
+		SrcIp:      src.String(),
+		DstIp:      dst.String(),
+		Time:       time,
+		Duration:   duration,
 		NumPackets: t.numPackets,
-		Blocked:     false,
-		Tags:        []string{"tcp"},
-		Suricata:    []string{},
-		Filename:    t.source,
-		Flow:        t.flowItems,
-		Size:        t.totalSize,
-		Flags:       make([]string, 0),
-		Flagids:     make([]string, 0),
+		Blocked:    false,
+		Tags:       []string{"tcp"},
+		Suricata:   []string{},
+		Filename:   t.source,
+		Flow:       t.flowItems,
+		Size:       t.totalSize,
+		Flags:      make([]string, 0),
+		Flagids:    make([]string, 0),
 	}
 
 	rawarr := make([]byte, 0)

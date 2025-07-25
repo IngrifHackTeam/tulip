@@ -27,29 +27,39 @@ import (
 	"github.com/google/gopacket/reassembly"
 )
 
+type TcpAssembler = reassembly.Assembler
+
+// Service represents an assembler service, capable of reassembling level 4 traffic flows.
+//
+// There are mainly 3 stages:
+// 1. Layer 3 (IP) defragmentation
+// 2. Layer 4 (TCP/UDP) reassembly
+// 3. Push back via the assembled channel
+//
+// The assembled channel is syncronous, which means that the process won't start unless you
+// start consuming flows coming from Assembled()
 type Service struct {
 	Config
 
-	// Stage 1: level 3 defragmentation
-
+	// Stage 1: IP defragmentation
 	defragmenter *ip4defrag.IPv4Defragmenter
 
 	// Stage 2: TCP/UDP reassembly
+	workerQueues  []chan QueueItem // One queue per worker
+	numWorkers    int              // Number of TCP/UDP assembler workers
+	tcpAssemblers []*TcpAssembler  // Partitioned TCP assemblers
+	udpAssemblers []*UdpAssembler  // Partitioned UDP assemblers
 
-	tcpStreamFactory *TcpStreamFactory
-	tcpStreamPool    *reassembly.StreamPool
-	tcpAssembler     *reassembly.Assembler
+	// we need this because when we flush we must be sure
+	// that nobody is doing anything
+	assemblersMu sync.RWMutex
 
-	udpAssembler *UDPAssembler
+	// Stage 3: returning assembledQueue flows
+	assembledQueue chan db.FlowEntry // Channel for processed flow entries
 
-	// Stage 3: returning assembled flows
-
-	assembled chan db.FlowEntry // Channel for processed flow entries
-
-	// Misc state
-
-	stats     Stats        // Statistics about processed packets, bytes, and flows
+	// Internal state
 	mu        sync.Mutex   // Mutex to protect stats updates
+	stats     Stats        // Statistics about processed packets, bytes, and flows
 	flushTick *time.Ticker // Ticker for flushing connections
 }
 
@@ -67,6 +77,8 @@ type Config struct {
 	Experimental  bool           // Experimental features enabled
 	NonStrict     bool           // Non-strict mode for TCP stream assembly
 
+	Workers int // Number of workers for TCP/UDP assembly
+
 	ConnectionTcpTimeout time.Duration
 	ConnectionUdpTimeout time.Duration
 
@@ -75,43 +87,59 @@ type Config struct {
 }
 
 func NewAssemblerService(ctx context.Context, opts Config) *Service {
-	var (
-		tcpStreamFactory = &TcpStreamFactory{nonStrict: opts.NonStrict, streamdocLimit: opts.StreamdocLimit}
-		tcpStreamPool    = reassembly.NewStreamPool(tcpStreamFactory)
-		tcpAssembler     = reassembly.NewAssembler(tcpStreamPool)
-	)
 
 	if opts.FlushInterval <= 0 {
 		opts.FlushInterval = 5 * time.Second // Default flush interval if not set
 	}
 
-	udpAssembler := NewUDPAssembler(opts.StreamdocLimit)
-
 	srv := &Service{
 		Config: opts,
 
-		defragmenter: ip4defrag.NewIPv4Defragmenter(),
-
-		tcpStreamFactory: tcpStreamFactory,
-		tcpStreamPool:    tcpStreamPool,
-		tcpAssembler:     tcpAssembler,
-
-		udpAssembler: udpAssembler,
-
-		assembled: make(chan db.FlowEntry),
-
-		flushTick: time.NewTicker(opts.FlushInterval),
+		defragmenter:   ip4defrag.NewIPv4Defragmenter(),
+		assembledQueue: make(chan db.FlowEntry),
+		flushTick:      time.NewTicker(opts.FlushInterval),
 	}
 
-	onComplete := func(fe db.FlowEntry) { srv.reassemblyCallback(fe) }
-	srv.tcpStreamFactory.OnComplete = onComplete
+	var (
+		tcpStreamFactory = &TcpStreamFactory{
+			NonStrict:      opts.NonStrict,
+			StreamdocLimit: opts.StreamdocLimit,
+			OnComplete:     srv.reassemblyCallback,
+		}
+	)
+
+	workers := max(1, opts.Workers) // Ensure at least one worker
+
+	srv.numWorkers = workers
+	srv.workerQueues = make([]chan QueueItem, workers)
+	tcpAssemblers := make([]*TcpAssembler, workers)
+	udpAssemblers := make([]*UdpAssembler, workers)
+
+	for i := range workers {
+		srv.workerQueues[i] = make(chan QueueItem, 100)
+
+		tcpStreamPool := reassembly.NewStreamPool(tcpStreamFactory)
+
+		tcpAssemblers[i] = reassembly.NewAssembler(tcpStreamPool)
+		udpAssemblers[i] = NewUDPAssembler(opts.StreamdocLimit)
+
+		go srv.worker(
+			ctx,
+			tcpAssemblers[i],
+			udpAssemblers[i],
+			srv.workerQueues[i],
+		)
+	}
+
+	srv.tcpAssemblers = tcpAssemblers
+	srv.udpAssemblers = udpAssemblers
 
 	return srv
 }
 
 // Assembled returns a channel that emits assembled flow entries.
 func (s *Service) Assembled() <-chan db.FlowEntry {
-	return s.assembled
+	return s.assembledQueue
 }
 
 func (a *Service) GetStats() Stats {
@@ -201,24 +229,22 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 	return nil
 }
 
-// flushIfNeeded calls FlushConnections if the current time exceeds the last flush time
-// by the configured FlushInterval and returns the new last flush time.
-func (a *Service) flushIfNeeded(lastFlush time.Time) time.Time {
-	if a.FlushInterval == 0 || lastFlush.Add(a.FlushInterval).Unix() >= time.Now().Unix() {
-		return lastFlush
-	}
-	a.FlushConnections()
-	return time.Now()
-}
-
 // FlushConnections closes and saves connections that are older than the configured timeouts.
 func (a *Service) FlushConnections() {
+	slog.Debug("Flushing connections", "tcpTimeout", a.ConnectionTcpTimeout, "udpTimeout", a.ConnectionUdpTimeout)
+	a.assemblersMu.Lock() // we need to stop every assembler
+	defer a.assemblersMu.Unlock()
+
 	thresholdTcp := time.Now().Add(-a.ConnectionTcpTimeout)
 	thresholdUdp := time.Now().Add(-a.ConnectionUdpTimeout)
 	flushed, closed, discarded := 0, 0, 0
 
 	if a.ConnectionTcpTimeout != 0 {
-		flushed, closed = a.tcpAssembler.FlushCloseOlderThan(thresholdTcp)
+		for _, assembler := range a.tcpAssemblers {
+			localFlushed, localClosed := assembler.FlushCloseOlderThan(thresholdTcp)
+			flushed += localFlushed
+			closed += localClosed
+		}
 		discarded = a.defragmenter.DiscardOlderThan(thresholdTcp)
 	}
 
@@ -227,13 +253,14 @@ func (a *Service) FlushConnections() {
 	}
 
 	if a.ConnectionUdpTimeout != 0 {
-		udpFlows := a.udpAssembler.CompleteOlderThan(thresholdUdp)
-		for _, flow := range udpFlows {
-			a.reassemblyCallback(*flow)
-		}
-
-		if len(udpFlows) != 0 {
-			slog.Info("Assembled UDP flows", "count", len(udpFlows))
+		for _, udpAssembler := range a.udpAssemblers {
+			udpFlows := udpAssembler.CompleteOlderThan(thresholdUdp)
+			for _, flow := range udpFlows {
+				a.reassemblyCallback(*flow)
+			}
+			if len(udpFlows) != 0 {
+				slog.Info("Assembled UDP flows", "count", len(udpFlows))
+			}
 		}
 	}
 }
@@ -255,6 +282,11 @@ type Context struct {
 
 func (c Context) GetCaptureInfo() gopacket.CaptureInfo { return c.CaptureInfo }
 
+type QueueItem struct {
+	pkt gopacket.Packet
+	ctx Context
+}
+
 // processPacket handles a single packet: skipping, defragmentation, protocol dispatch (TCP/UDP), and error handling.
 // Returns true if processing should stop.
 func (a *Service) processPacket(packet gopacket.Packet, fname string, noDefrag bool) (stop bool) {
@@ -269,24 +301,20 @@ func (a *Service) processPacket(packet gopacket.Packet, fname string, noDefrag b
 		}
 	}
 
+	// Partition the packet to a worker queue based on the network flow
+	// This ensures that packets belonging to the same flow are processed by the same worker.
 	transport := packet.TransportLayer()
 	if transport == nil {
-		return false // skip packet
+		return false // No transport layer, nothing to process
 	}
 
-	flow := packet.NetworkLayer().NetworkFlow()
+	flow := transport.TransportFlow()
+	queue := a.getWorkerQueue(flow)
+
 	context := Context{packet.Metadata().CaptureInfo, fname}
+	queue <- QueueItem{packet, context}
 
-	switch transport.LayerType() {
-	case layers.LayerTypeTCP:
-		a.tcpAssembler.AssembleWithContext(flow, transport.(*layers.TCP), context)
-	case layers.LayerTypeUDP:
-		a.udpAssembler.AssembleWithContext(flow, transport.(*layers.UDP), context)
-	default:
-		slog.Warn("Unsupported transport layer", "layer", transport.LayerType().String(), "file", fname)
-	}
-
-	return false // continue processing packets
+	return false
 }
 
 // defragPacket attempts to defragment an IPv4 packet.
@@ -334,5 +362,46 @@ func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 
 // reassemblyCallback is called when a flow is completed.
 func (a *Service) reassemblyCallback(entry db.FlowEntry) {
-	a.assembled <- entry
+	a.assembledQueue <- entry
+}
+
+func (a *Service) worker(ctx context.Context, tcpAssembler *TcpAssembler, udpAssembler *UdpAssembler, queue chan QueueItem) {
+
+	lockAndProcess := func(item QueueItem) {
+		a.assemblersMu.RLock() // Lock to ensure no flushing while processing
+		defer a.assemblersMu.RUnlock()
+
+		transport := item.pkt.TransportLayer()
+		if transport == nil {
+			return // No transport layer, skip processing
+		}
+
+		flow := item.pkt.NetworkLayer().NetworkFlow()
+		switch transport.LayerType() {
+		case layers.LayerTypeTCP:
+			tcpAssembler.AssembleWithContext(flow, transport.(*layers.TCP), item.ctx)
+		case layers.LayerTypeUDP:
+			udpAssembler.AssembleWithContext(flow, transport.(*layers.UDP), item.ctx)
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.WarnContext(ctx, "assembler: worker context cancelled, stopping worker")
+			return
+		case item, ok := <-queue:
+			if !ok {
+				return // Channel closed, exit the worker
+			}
+
+			lockAndProcess(item)
+		}
+	}
+}
+
+func (s *Service) getWorkerQueue(flow gopacket.Flow) chan QueueItem {
+	hash := flow.FastHash()
+	idx := int(hash % uint64(s.numWorkers))
+	return s.workerQueues[idx]
 }

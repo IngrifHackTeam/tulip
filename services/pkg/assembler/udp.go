@@ -52,23 +52,23 @@ func NewUdpStreamId(e1, e2 gopacket.Endpoint, p1, p2 layers.UDPPort) UdpStreamId
 	return id
 }
 
-// UDPAssembler is responsible for assembling UDP streams from packets.
+// UdpAssembler is responsible for assembling UDP streams from packets.
 //
 // It tries to adhere to the same interface as TCPAssembler, allowing it to be used in a similar way.
 // It maintains a map of active UDP streams, identified by their endpoints and ports.
-type UDPAssembler struct {
+type UdpAssembler struct {
 	streamdocLimit int // Limit for the size of the stream document in MongoDB
 	streams        map[UdpStreamId]*UdpStream
 }
 
-func NewUDPAssembler(streamdocLimit int) *UDPAssembler {
-	return &UDPAssembler{
+func NewUDPAssembler(streamdocLimit int) *UdpAssembler {
+	return &UdpAssembler{
 		streamdocLimit: streamdocLimit,
 		streams:        map[UdpStreamId]*UdpStream{},
 	}
 }
 
-func (a *UDPAssembler) getOrCreateUdpStream(id UdpStreamId) *UdpStream {
+func (a *UdpAssembler) getOrCreateUdpStream(id UdpStreamId) *UdpStream {
 	// get or create the stream
 	stream, ok := a.streams[id]
 	if !ok {
@@ -78,7 +78,7 @@ func (a *UDPAssembler) getOrCreateUdpStream(id UdpStreamId) *UdpStream {
 	return stream
 }
 
-func (a *UDPAssembler) AssembleWithContext(
+func (a *UdpAssembler) AssembleWithContext(
 	netFlow gopacket.Flow,
 	u *layers.UDP,
 	ac reassembly.AssemblerContext,
@@ -91,14 +91,12 @@ func (a *UDPAssembler) AssembleWithContext(
 
 	id := NewUdpStreamId(netFlow.Src(), netFlow.Dst(), u.SrcPort, u.DstPort)
 
-	// get or create the stream
 	stream := a.getOrCreateUdpStream(id)
-
 	stream.processSegment(netFlow, u, context)
 	return stream
 }
 
-func (a *UDPAssembler) CompleteOlderThan(threshold time.Time) []*db.FlowEntry {
+func (a *UdpAssembler) CompleteOlderThan(threshold time.Time) []*db.FlowEntry {
 	completeFlows := make([]*db.FlowEntry, 0)
 
 	for id, stream := range a.streams {

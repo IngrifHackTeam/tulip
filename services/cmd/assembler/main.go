@@ -103,6 +103,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	nonstrict := viper.GetBool("nonstrict")
 	connectionTimeoutStr := viper.GetString("connection-timeout")
 	pperf := viper.GetBool("pperf")
+	workers := viper.GetInt("workers")
 
 	if pperf {
 		go func() {
@@ -175,6 +176,7 @@ func runAssembler(cmd *cobra.Command, args []string) {
 		ConnectionUdpTimeout: connectionTimeout,
 		FlagIdUrl:            flagIdUrl,
 		StreamdocLimit:       streamdocLimit,
+		Workers:              workers,
 	}
 
 	// create a new assembler service instance
@@ -246,7 +248,9 @@ func watchForPcaps(ctx context.Context, watchDir string, pcapChan chan<- string)
 			time.Sleep(pollInterval)
 			continue
 		}
-		for _, file := range files {
+
+
+		for i, file := range files {
 			select {
 			case <-ctx.Done():
 				return
@@ -266,7 +270,7 @@ func watchForPcaps(ctx context.Context, watchDir string, pcapChan chan<- string)
 			}
 			seen[fullPath] = struct{}{}
 
-			slog.Info("Ingesting new PCAP file", slog.String("file", fullPath))
+			slog.Info("ingesting new PCAP file", slog.String("file", fullPath), "idx", i+1, "of", len(files))
 			pcapChan <- fullPath
 		}
 		time.Sleep(pollInterval)
