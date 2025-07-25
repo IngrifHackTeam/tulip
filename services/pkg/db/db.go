@@ -34,7 +34,7 @@ type FlowEntry struct {
 	DstIp        string             `bson:"dst_ip" json:"dst_ip"`           // Destination IP address
 	Time         int                `bson:"time" json:"time"`               // Timestamp (epoch)
 	Duration     int                `bson:"duration" json:"duration"`       // Duration in milliseconds
-	Num_packets  int                `bson:"num_packets" json:"num_packets"` // Number of packets
+	NumPackets  int                `bson:"num_packets" json:"num_packets"` // Number of packets
 	Blocked      bool               `bson:"blocked" json:"blocked"`
 	Filename     string             `bson:"filename" json:"filename"` // Name of the pcap file this flow was captured in
 	Fingerprints []uint32           `bson:"fingerprints" json:"fingerprints"`

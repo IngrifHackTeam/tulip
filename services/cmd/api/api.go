@@ -260,7 +260,7 @@ func (api *Router) query(c echo.Context) error {
 			DstIp:        flow.DstIp,
 			Time:         flow.Time,
 			Duration:     flow.Duration,
-			Num_packets:  flow.Num_packets,
+			Num_packets:  flow.NumPackets,
 			Blocked:      flow.Blocked,
 			Filename:     flow.Filename,
 			Fingerprints: flow.Fingerprints,

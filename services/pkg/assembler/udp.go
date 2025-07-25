@@ -129,7 +129,7 @@ func completeReassembly(stream *UdpStream) *db.FlowEntry {
 		DstPort:      int(stream.portDst),
 		Time:         startTime,
 		Duration:     duration,
-		Num_packets:  int(stream.PacketCount),
+		NumPackets:  int(stream.PacketCount),
 		Blocked:      false,
 		Tags:         []string{"udp"},
 		Suricata:     []string{},

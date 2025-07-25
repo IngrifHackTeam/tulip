@@ -233,7 +233,7 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 		DstIp:       dst.String(),
 		Time:        time,
 		Duration:    duration,
-		Num_packets: t.numPackets,
+		NumPackets: t.numPackets,
 		Blocked:     false,
 		Tags:        []string{"tcp"},
 		Suricata:    []string{},
