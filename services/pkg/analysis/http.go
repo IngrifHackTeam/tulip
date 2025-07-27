@@ -150,7 +150,7 @@ func (a *httpPass) parseHttpFlowItem(flow *db.FlowEntry, idx int, fingerprints c
 
 		// Replace the reader to allow for in-place decompression
 		// Limit the reader to prevent potential decompression bombs
-		var maxDecSize int64 = DefaultDecompressionSize
+		var maxDecSize = DefaultDecompressionSize
 		if a.MaxDecompressionSize > 0 {
 			maxDecSize = a.MaxDecompressionSize
 		}

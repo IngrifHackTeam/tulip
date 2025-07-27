@@ -91,7 +91,9 @@ func TestApplyFlagRegexTags(t *testing.T) {
 			a, err := FlagAnalyzer(c.regex)
 			require.NoError(t, err, "should create flag analyzer without error")
 
-			a.Run(c.input)
+			err = a.Run(c.input)
+			require.NoError(t, err, "should run flag analyzer without error")
+
 			assert.Equal(t, c.expectedTags, c.input.Tags, "tags should match expected")
 			assert.Equal(t, c.expectedFlags, c.input.Flags, "flags should match expected")
 		})

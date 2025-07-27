@@ -155,7 +155,7 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 		bytes     int64 = 0     // Total bytes processed
 		position  int64 = 0     // Total packets processed, including skipped
 		processed int64 = 0     // Packets processed after skipping
-		finished  bool  = false // Whether we consumed all packets
+		finished        = false // Whether we consumed all packets
 	)
 
 	toBeSkipped := a.checkProcessedCount(sourceName)
@@ -176,11 +176,17 @@ func (a *Service) ProcessPacketSrc(ctx context.Context, src *gopacket.PacketSour
 			"finished", finished,
 		)
 
-		a.DB.InsertPcap(db.PcapFile{
+		err := a.DB.InsertPcap(db.PcapFile{
 			FileName: sourceName,
 			Position: position,
 			Finished: finished,
 		})
+
+		if err != nil {
+			slog.Error("assembler: failed to update database entry", "file", sourceName, "err", err)
+		} else {
+			slog.Debug("assembler: database entry updated successfully", "file", sourceName)
+		}
 	}()
 
 	nodefrag := false
@@ -352,7 +358,10 @@ func (a *Service) defragPacket(packet gopacket.Packet) (complete bool, err error
 		}
 		// Decode the next layer using the new payload.
 		nextDecoder := newip4.NextLayerType()
-		nextDecoder.Decode(newip4.Payload, pb)
+		err = nextDecoder.Decode(newip4.Payload, pb)
+		if err != nil {
+			slog.Warn("Error decoding next layer after defragmentation", "err", err)
+		}
 	}
 
 	return true, nil

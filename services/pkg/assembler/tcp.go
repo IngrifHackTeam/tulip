@@ -12,7 +12,6 @@
 package assembler
 
 import (
-	"sync"
 	"tulip/pkg/db"
 
 	"github.com/google/gopacket"
@@ -89,8 +88,6 @@ type TcpStream struct {
 	numPackets int
 
 	nonStrict bool // non-strict mode, used for testing
-
-	mu sync.Mutex
 
 	onComplete func(db.FlowEntry) // Callback to call when the stream is complete
 }
@@ -228,11 +225,6 @@ func (t *TcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 		Size:       t.totalSize,
 		Flags:      make([]string, 0),
 		Flagids:    make([]string, 0),
-	}
-
-	rawarr := make([]byte, 0)
-	for _, item := range t.flowItems {
-		rawarr = append(rawarr, item.Raw...)
 	}
 
 	t.onComplete(entry)

@@ -24,7 +24,12 @@ func (i *Ingestor) Serve(addr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to start TCP server: %w", err)
 	}
-	defer ln.Close()
+	defer func() {
+		err = ln.Close()
+		if err != nil {
+			slog.Error("Failed to close listener", slog.Any("err", err))
+		}
+	}()
 
 	slog.Info("Listening for incoming PCAP connections...", slog.String("address", addr))
 
@@ -40,7 +45,13 @@ func (i *Ingestor) Serve(addr string) error {
 
 // handlePcapConnection handles a single incoming PCAP-over-IP connection.
 func (i *Ingestor) handlePcapConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		err := conn.Close()
+		if err != nil {
+			slog.Error("Failed to close connection", slog.Any("err", err))
+		}
+	}()
+
 	clientAddr := conn.RemoteAddr().String()
 	clientID := sanitizeFilename(clientAddr)
 	slog.Info("Accepted new PCAP connection", slog.String("client", clientAddr))
@@ -49,7 +60,11 @@ func (i *Ingestor) handlePcapConnection(conn net.Conn) {
 	defer cancel()
 
 	rw := NewRotatingPCAPWriter(conn, i.TmpDir, i.DestDir, clientID, i.RotateInterval)
-	rw.Start(ctx)
+	err := rw.Start(ctx)
+	if err != nil {
+		slog.Error("Failed to start PCAP writer", slog.String("client", clientAddr), slog.Any("err", err))
+		return
+	}
 
 	slog.Info("Finished ingesting PCAP connection", slog.String("client", clientAddr))
 }

@@ -55,7 +55,10 @@ func (rw *RotatingPCAPWriter) Start(ctx context.Context) error {
 	)
 
 	rotate := func() {
-		currentFile.Close()
+		err = currentFile.Close()
+		if err != nil {
+			slog.Error("Failed to close current PCAP file", slog.String("file", currentFile.Name()), slog.Any("err", err))
+		}
 		rw.moveToDest(currentFile.Name())
 		currentFile = nil
 		currentWriter = nil
@@ -87,7 +90,7 @@ rotationLoop:
 
 		currentWriter = pcapgo.NewWriter(currentFile)
 		if err := currentWriter.WriteFileHeader(snaplen, linktype); err != nil {
-			currentFile.Close()
+			_ = currentFile.Close()
 			return fmt.Errorf("failed to write PCAP header: %w", err)
 		}
 
@@ -109,7 +112,10 @@ rotationLoop:
 					break rotationLoop
 				}
 
-				err := copyPkt(pkt, currentWriter)
+				ci := pkt.Metadata().CaptureInfo
+				data := pkt.Data()
+				err = currentWriter.WritePacket(ci, data)
+
 				if err != nil {
 					return fmt.Errorf("failed to copy packet: %w", err)
 				}
@@ -151,24 +157,27 @@ func copyFile(srcPath, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open source file: %w", err)
 	}
-	defer input.Close()
+	defer func() {
+		err = input.Close()
+		if err != nil {
+			slog.Error("Failed to close source file", slog.String("src", srcPath), slog.Any("err", err))
+		}
+	}()
 
 	output, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
-	defer output.Close()
+	defer func() {
+		err = output.Close()
+		if err != nil {
+			slog.Error("Failed to close destination file", slog.String("dest", destPath), slog.Any("err", err))
+		}
+	}()
 
 	if _, err := io.Copy(output, input); err != nil {
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
 	return nil
-}
-
-func copyPkt(src gopacket.Packet, dst *pcapgo.Writer) error {
-	ci := src.Metadata().CaptureInfo
-	data := src.Data()
-
-	return dst.WritePacket(ci, data)
 }

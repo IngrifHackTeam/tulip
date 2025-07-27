@@ -13,6 +13,7 @@ import (
 	"github.com/google/gopacket/ip4defrag"
 	"github.com/google/gopacket/layers"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -161,7 +162,7 @@ func TestDefragPacket_CompletePacket_DecodesNextLayer(t *testing.T) {
 		DstPort: 80,
 		Seq:     1,
 	}
-	tcp.SetNetworkLayerForChecksum(ip4)
+	require.NoError(t, tcp.SetNetworkLayerForChecksum(ip4), "should set network layer for TCP checksum")
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{}
 	err := gopacket.SerializeLayers(buf, opts, ip4, tcp, gopacket.Payload(payload))

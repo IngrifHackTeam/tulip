@@ -30,8 +30,7 @@ func TestHttpAnalyzer_RequestPlain(t *testing.T) {
 func TestHttpAnalyzer_ResponseGzip(t *testing.T) {
 	body := []byte("hello world")
 	gzipped := makeGzip(t, body)
-	raw := []byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n")
-	raw = append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), gzipped...)
+	raw := append([]byte("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n"), gzipped...)
 	flow := &db.FlowEntry{
 		Flow: []db.FlowItem{{Raw: raw, From: "s"}},
 	}
@@ -45,8 +44,7 @@ func TestHttpAnalyzer_RequestWithBrotli(t *testing.T) {
 	body := []byte("hello world")
 	brBytes := makeBrotli(t, body)
 
-	raw := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nContent-Encoding: br\r\nContent-Length: %d\r\n\r\n")
-	raw = append([]byte("GET / HTTP/1.1\r\nHost: example.com\r\nContent-Encoding: br\r\n\r\n"), brBytes...)
+	raw := append([]byte("GET / HTTP/1.1\r\nHost: example.com\r\nContent-Encoding: br\r\n\r\n"), brBytes...)
 	flow := &db.FlowEntry{
 		Flow: []db.FlowItem{{Raw: raw, From: "c"}},
 	}
@@ -97,7 +95,7 @@ func makeGzip(t *testing.T, data []byte) []byte {
 	w := gzip.NewWriter(&buf)
 	_, err := w.Write(data)
 	require.NoError(t, err, "Unexpected error writing gzip data")
-	w.Close()
+	require.NoError(t, w.Close(), "Unexpected error closing gzip writer")
 	return buf.Bytes()
 }
 
@@ -107,6 +105,6 @@ func makeBrotli(t *testing.T, data []byte) []byte {
 	w := brotli.NewWriter(&buf)
 	_, err := w.Write(data)
 	require.NoError(t, err, "Unexpected error writing brotli data")
-	w.Close()
+	require.NoError(t, w.Close(), "Unexpected error closing brotli writer")
 	return buf.Bytes()
 }
