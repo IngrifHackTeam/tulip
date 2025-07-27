@@ -378,7 +378,7 @@ func (api *Router) convertToSinglePythonRequest(c echo.Context) error {
 		return c.String(http.StatusBadRequest, "Could not decode base64 request body")
 	}
 
-	py, err := convertSingleHTTPRequest(raw, flow, req.Tokenize, req.UseRequestsSession)
+	py, err := convertSingleHTTPRequest(raw, flow, req.Tokenize, req.UseSession)
 	if err != nil {
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("There was an error while converting the request:\n%s: %s", err.Error(), err))
 	}
