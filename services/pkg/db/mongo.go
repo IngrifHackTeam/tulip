@@ -41,7 +41,7 @@ func NewMongoDatabase(ctx context.Context, uri string) (Database, error) {
 	}
 
 	if err := client.Ping(ctx, readpref.Primary()); err != nil {
-		client.Disconnect(ctx)
+		_ = client.Disconnect(ctx)
 		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
 
@@ -57,23 +57,26 @@ func NewMongoDatabase(ctx context.Context, uri string) (Database, error) {
 
 // GetTagList returns all tag names (_id) from the tags collection
 func (db *mongoDb) GetTagList() ([]string, error) {
-	tagsCollection := db.client.Database("pcap").Collection("tags")
 
-	cur, err := tagsCollection.Find(context.TODO(), bson.M{})
+	cur, err := db.tagsColl.Find(context.TODO(), bson.M{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to find tags: %v", err)
 	}
 
-	defer cur.Close(context.TODO())
-
 	tags := make([]string, 0)
+	var tag struct {
+		ID string `bson:"_id"`
+	}
+
 	for cur.Next(context.TODO()) {
-		var tag struct {
-			ID string `bson:"_id"`
-		}
 		if err := cur.Decode(&tag); err == nil {
 			tags = append(tags, tag.ID)
 		}
+	}
+
+	err = cur.Close(context.TODO())
+	if err != nil {
+		log.Printf("Failed to close cursor: %v", err)
 	}
 
 	pipeline := mongo.Pipeline{
@@ -88,17 +91,15 @@ func (db *mongoDb) GetTagList() ([]string, error) {
 		}}},
 	}
 
-	flowCollection := db.client.Database("pcap").Collection("pcap")
-	cur2, err := flowCollection.Aggregate(context.TODO(), pipeline)
+	tagsCur, err := db.flowColl.Aggregate(context.TODO(), pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("failed to aggregate tags: %v", err)
 	}
-	defer cur2.Close(context.TODO())
 
 	var aggResult []struct {
 		UniqueTags []string `bson:"uniqueTags"`
 	}
-	if err := cur2.All(context.TODO(), &aggResult); err != nil {
+	if err := tagsCur.All(context.TODO(), &aggResult); err != nil {
 		return nil, fmt.Errorf("failed to decode aggregation result: %v", err)
 	}
 
@@ -121,23 +122,24 @@ func (db *mongoDb) CountFlows(filters bson.D) (int64, error) {
 
 // GetSignature returns a signature document by its integer ID or ObjectID string
 func (db *mongoDb) GetSignature(id string) (SuricataSig, error) {
-	collection := db.client.Database("pcap").Collection("signatures")
 	var result SuricataSig
+	var filter bson.M
 
-	// Try as ObjectID first
 	objID, err := primitive.ObjectIDFromHex(id)
-
-	filter := bson.M{"_id": objID}
-	if err != nil {
-		// Try as int
-		intID, err2 := toInt(id)
-		if err2 != nil {
-			return result, fmt.Errorf("invalid id: %v", id)
-		}
-		filter = bson.M{"id": intID}
+	if err == nil {
+		filter = bson.M{"_id": objID}
 	}
 
-	err = collection.FindOne(context.TODO(), filter).Decode(&result)
+	if filter == nil {
+		// If ObjectID conversion failed, try as integer ID
+		idInt, err := strconv.Atoi(id)
+		if err != nil {
+			return result, fmt.Errorf("invalid id: %v", id)
+		}
+		filter = bson.M{"id": idInt}
+	}
+
+	err = db.signatureColl.FindOne(context.TODO(), filter).Decode(&result)
 	return result, err
 }
 
@@ -148,7 +150,7 @@ func (db *mongoDb) SetStar(flowId string, star bool) error {
 	if err != nil {
 		return err
 	}
-	update := bson.M{}
+	var update bson.M
 	if star {
 		update = bson.M{"$push": bson.M{"tags": "starred"}}
 	} else {
@@ -158,7 +160,7 @@ func (db *mongoDb) SetStar(flowId string, star bool) error {
 	return err
 }
 
-// GetFlowDetail returns a flow by its ObjectID string, including signatures
+// GetFlowDetail returns a flow by its ObjectID string
 func (db *mongoDb) GetFlowDetail(id string) (*FlowEntry, error) {
 	collection := db.client.Database("pcap").Collection("pcap")
 	objID, err := primitive.ObjectIDFromHex(id)
@@ -170,40 +172,7 @@ func (db *mongoDb) GetFlowDetail(id string) (*FlowEntry, error) {
 		return nil, err
 	}
 
-	// Attach signatures if present (unchanged)
-	if len(flow.Suricata) > 0 {
-		sigColl := db.client.Database("pcap").Collection("signatures")
-		var sigs []SuricataSig
-		for _, sigID := range flow.Suricata {
-			var sig SuricataSig
-			err := sigColl.FindOne(context.TODO(), bson.M{"id": sigID}).Decode(&sig)
-			if err == nil {
-				sigs = append(sigs, sig)
-			}
-		}
-		// Optionally, you can add a Signatures field to FlowEntry to hold these
-		// For now, just ignore if not present in struct
-	}
-
 	return &flow, nil
-}
-
-// --- helpers for filter conversion ---
-func toInt(v any) (int, error) {
-	switch t := v.(type) {
-	case int:
-		return t, nil
-	case int32:
-		return int(t), nil
-	case int64:
-		return int(t), nil
-	case float64:
-		return int(t), nil
-	case string:
-		return strconv.Atoi(t)
-	default:
-		return 0, fmt.Errorf("not an int: %v", v)
-	}
 }
 
 func (db *mongoDb) ConfigureDatabase() error {
@@ -288,10 +257,19 @@ func (db *mongoDb) InsertPcap(pcap PcapFile) error {
 
 func (db mongoDb) GetPcap(uri string) (bool, PcapFile) {
 	files := db.client.Database("pcap").Collection("filesImported")
+
+	cur := files.FindOne(context.TODO(), bson.M{"file_name": uri})
+
 	var result PcapFile
-	match := files.FindOne(context.TODO(), bson.M{"file_name": uri})
-	match.Decode(&result)
-	return match.Err() != mongo.ErrNoDocuments, result
+	err := cur.Decode(&result)
+	if err == mongo.ErrNoDocuments {
+		// No document found, return empty result
+		return false, PcapFile{}
+	} else if err != nil {
+		return true, PcapFile{}
+	}
+
+	return true, result
 }
 
 // AddSignature adds a signature to the database, returning its MongoDB ID and error.
@@ -360,7 +338,10 @@ func (db *mongoDb) AddSignatureToFlow(flow FlowID, sig SuricataSig, window int) 
 	tags := []string{"suricata"}
 	// Add tag from the signature if it contained one
 	if sig.Tag != "" {
-		db.InsertTag(sig.Tag)
+		err := db.InsertTag(sig.Tag)
+		if err != nil {
+			return fmt.Errorf("failed to insert tag: %v", err)
+		}
 		tags = append(tags, sig.Tag)
 	}
 
@@ -563,15 +544,16 @@ func (db mongoDb) GetFlows(ctx context.Context, opts *FindFlowsOptions) ([]FlowE
 	if err != nil {
 		return nil, fmt.Errorf("failed to find flows: %v", err)
 	}
-	defer cur.Close(ctx)
+	defer func() {
+
+	}()
 
 	var results []FlowEntry
-	for cur.Next(ctx) {
-		var entry FlowEntry
-		if err := cur.Decode(&entry); err == nil {
-			results = append(results, entry)
-		}
+	err = cur.All(ctx, &results)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode flows: %v", err)
 	}
+
 	return results, nil
 }
 
