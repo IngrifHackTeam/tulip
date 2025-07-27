@@ -61,17 +61,17 @@ func init() {
 	rootCmd.Flags().Bool("verbose", false, "Enable verbose logging")
 	rootCmd.Flags().Int("workers", 2, "Number of worker threads to use for processing PCAP files")
 
-	viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
-	viper.BindPFlag("watch-dir", rootCmd.Flags().Lookup("watch-dir"))
-	viper.BindPFlag("flag", rootCmd.Flags().Lookup("flag"))
-	viper.BindPFlag("flush-interval", rootCmd.Flags().Lookup("flush-interval"))
-	viper.BindPFlag("tcp-lazy", rootCmd.Flags().Lookup("tcp-lazy"))
-	viper.BindPFlag("experimental", rootCmd.Flags().Lookup("experimental"))
-	viper.BindPFlag("nonstrict", rootCmd.Flags().Lookup("nonstrict"))
-	viper.BindPFlag("connection-timeout", rootCmd.Flags().Lookup("connection-timeout"))
-	viper.BindPFlag("pperf", rootCmd.Flags().Lookup("pperf"))
-	viper.BindPFlag("verbose", rootCmd.Flags().Lookup("verbose"))
-	viper.BindPFlag("workers", rootCmd.Flags().Lookup("workers"))
+	_ = viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
+	_ = viper.BindPFlag("watch-dir", rootCmd.Flags().Lookup("watch-dir"))
+	_ = viper.BindPFlag("flag", rootCmd.Flags().Lookup("flag"))
+	_ = viper.BindPFlag("flush-interval", rootCmd.Flags().Lookup("flush-interval"))
+	_ = viper.BindPFlag("tcp-lazy", rootCmd.Flags().Lookup("tcp-lazy"))
+	_ = viper.BindPFlag("experimental", rootCmd.Flags().Lookup("experimental"))
+	_ = viper.BindPFlag("nonstrict", rootCmd.Flags().Lookup("nonstrict"))
+	_ = viper.BindPFlag("connection-timeout", rootCmd.Flags().Lookup("connection-timeout"))
+	_ = viper.BindPFlag("pperf", rootCmd.Flags().Lookup("pperf"))
+	_ = viper.BindPFlag("verbose", rootCmd.Flags().Lookup("verbose"))
+	_ = viper.BindPFlag("workers", rootCmd.Flags().Lookup("workers"))
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -123,7 +123,11 @@ func runAssembler(cmd *cobra.Command, args []string) {
 	slog.Info("Connected to MongoDB")
 
 	slog.Info("Configuring MongoDB database...")
-	gDB.ConfigureDatabase()
+	err = gDB.ConfigureDatabase()
+	if err != nil {
+		slog.Error("Failed to configure MongoDB database", slog.Any("err", err))
+		os.Exit(1)
+	}
 
 	// Parse flush interval
 	var flushInterval time.Duration
@@ -285,7 +289,7 @@ func processPcapFile(ctx context.Context, service *assembler.Service, fullPath s
 		slog.Error("Failed to open PCAP file", slog.Any("err", err), slog.String("file", fullPath))
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader, err := pcapgo.NewReader(file)
 	if err != nil {
@@ -294,7 +298,10 @@ func processPcapFile(ctx context.Context, service *assembler.Service, fullPath s
 	}
 
 	oldStats := service.GetStats()
-	processPcapReader(ctx, service, reader, fullPath)
+	err = processPcapReader(ctx, service, reader, fullPath)
+	if err != nil {
+		slog.Error("Failed to process PCAP file", slog.Any("err", err), slog.String("file", fullPath))
+	}
 	newStats := service.GetStats()
 
 	elapsed := time.Since(startTime)

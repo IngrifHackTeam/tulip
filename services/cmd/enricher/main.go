@@ -44,9 +44,9 @@ func main() {
 	rootCmd.Flags().Bool("flowbits", true, "Tag flows with their flowbits")
 	rootCmd.Flags().String("redis", "", "Redis connection string")
 
-	viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
-	viper.BindPFlag("flowbits", rootCmd.Flags().Lookup("flowbits"))
-	viper.BindPFlag("redis", rootCmd.Flags().Lookup("redis"))
+	_ = viper.BindPFlag("mongo", rootCmd.Flags().Lookup("mongo"))
+	_ = viper.BindPFlag("flowbits", rootCmd.Flags().Lookup("flowbits"))
+	_ = viper.BindPFlag("redis", rootCmd.Flags().Lookup("redis"))
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
@@ -119,10 +119,6 @@ func runEnricher(cmd *cobra.Command, args []string) {
 		}
 	}
 */
-type suricataLog struct {
-	flow      db.FlowID
-	signature db.SuricataSig
-}
 
 func handleEveLine(json string, tagFlowbits bool) (stop bool, error error) {
 	if !gjson.Valid(json) {
@@ -154,7 +150,7 @@ func handleEveLine(json string, tagFlowbits bool) (stop bool, error error) {
 		tag = jtag.String()
 	}
 
-	if !(sigAction.Exists() || (flowbits.Exists() && tagFlowbits)) {
+	if !sigAction.Exists() && (!flowbits.Exists() || !tagFlowbits) {
 		return false, nil // No action to take
 	}
 
@@ -192,7 +188,7 @@ func handleEveLine(json string, tagFlowbits bool) (stop bool, error error) {
 		}
 	}
 
-	if !(flowbits.Exists() && tagFlowbits) {
+	if !flowbits.Exists() || !tagFlowbits {
 		return false, nil // No flowbits to process
 	}
 
@@ -203,9 +199,12 @@ func handleEveLine(json string, tagFlowbits bool) (stop bool, error error) {
 	})
 
 	// Add tags to tag collection
-	gDb.InsertTags(tags)
+	err := gDb.InsertTags(tags)
+	if err != nil {
+		return false, fmt.Errorf("failed to insert tags: %w", err)
+	}
 
-	err := gDb.AddTagsToFlow(id, tags, WINDOW)
+	err = gDb.AddTagsToFlow(id, tags, WINDOW)
 	if err != nil {
 		return false, fmt.Errorf("failed to add tags to flow: %w", err)
 	}
@@ -281,7 +280,11 @@ lineLoop:
 
 		processed := 0
 		for _, line := range lines {
-			pool.Invoke(line)
+			err := pool.Invoke(line)
+			if err != nil {
+				slog.Error("Failed to process line", slog.String("line", line), slog.Any("err", err))
+				continue
+			}
 			processed++
 		}
 

@@ -29,10 +29,10 @@ func main() {
 	rootCmd.Flags().String("dest-dir", "", "directory to move rotated PCAP files for downstream processing")
 	rootCmd.Flags().Duration("rotate-interval", time.Minute, "interval for rotating files from temp to destination folder (e.g. 1m, 30s)")
 
-	viper.BindPFlag("listen", rootCmd.Flags().Lookup("listen"))
-	viper.BindPFlag("temp-dir", rootCmd.Flags().Lookup("temp-dir"))
-	viper.BindPFlag("dest-dir", rootCmd.Flags().Lookup("dest-dir"))
-	viper.BindPFlag("rotate-interval", rootCmd.Flags().Lookup("rotate-interval"))
+	_ = viper.BindPFlag("listen", rootCmd.Flags().Lookup("listen"))
+	_ = viper.BindPFlag("temp-dir", rootCmd.Flags().Lookup("temp-dir"))
+	_ = viper.BindPFlag("dest-dir", rootCmd.Flags().Lookup("dest-dir"))
+	_ = viper.BindPFlag("rotate-interval", rootCmd.Flags().Lookup("rotate-interval"))
 
 	viper.AutomaticEnv()
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
