@@ -6,7 +6,6 @@ package analysis
 
 import (
 	"fmt"
-	"strings"
 	"tulip/pkg/db"
 )
 
@@ -21,87 +20,9 @@ import (
 // is then analyzed by a subsequent pass.
 type Pass interface {
 	fmt.Stringer
+
 	// String returns the name of the pass, used for logging and debugging.
 	String() string
 	// Run performs the analysis on the given flow entry.
 	Run(flow *db.FlowEntry) error
-}
-
-// Sequence represents a sequence of analysis passes to be executed in order.
-//
-// Sequence is a pass itself, allowing it to be combined with other passes.
-type Sequence struct {
-	passes []Pass // The ordered list of passes to execute in the pipeline.
-}
-
-func NewSequence(passes ...Pass) *Sequence {
-	return &Sequence{passes: passes}
-}
-
-func (p *Sequence) String() string {
-	var b strings.Builder
-	b.WriteString("Sequence(")
-	for i, pass := range p.passes {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(pass.String())
-	}
-	b.WriteString(")")
-	return b.String()
-}
-
-func (p *Sequence) Run(flow *db.FlowEntry) error {
-	for _, pass := range p.passes {
-		if err := pass.Run(flow); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (p *Sequence) AddPass(pass Pass) {
-	p.passes = append(p.passes, pass)
-}
-
-// Parallel represents a parallel execution of multiple analysis passes.
-//
-// Parallel is a pass itself, allowing it to be combined with other passes.
-type Parallel struct {
-	passes []Pass // The list of passes to execute in parallel.
-}
-
-func NewParallel(passes ...Pass) *Parallel {
-	return &Parallel{passes: passes}
-}
-
-func (p *Parallel) Name() string {
-	var b strings.Builder
-	b.WriteString("Parallel(")
-	for i, pass := range p.passes {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(pass.String())
-	}
-	b.WriteString(")")
-	return b.String()
-}
-
-func (p *Parallel) Run(flow *db.FlowEntry) error {
-	// Execute each pass in parallel.
-	errs := make(chan error, len(p.passes))
-	for _, pass := range p.passes {
-		go func(pass Pass) {
-			errs <- pass.Run(flow)
-		}(pass)
-	}
-
-	// Collect errors from all passes.
-	for range p.passes {
-		if err := <-errs; err != nil {
-			return err
-		}
-	}
-	return nil
 }

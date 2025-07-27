@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-package analysis
+package analysis_test
 
 import (
 	"errors"
 	"testing"
+	"tulip/pkg/analysis"
 	"tulip/pkg/db"
 
 	"github.com/stretchr/testify/assert"
@@ -18,9 +19,7 @@ type mockPass struct {
 	called    *bool
 }
 
-func (m *mockPass) String() string {
-	return m.name
-}
+func (m *mockPass) String() string { return m.name }
 
 func (m *mockPass) Run(flow *db.FlowEntry) error {
 	if m.called != nil {
@@ -36,7 +35,7 @@ func TestSequence_Run(t *testing.T) {
 	called1, called2 := false, false
 	pass1 := &mockPass{name: "pass1", called: &called1}
 	pass2 := &mockPass{name: "pass2", called: &called2}
-	seq := NewSequence(pass1, pass2)
+	seq := analysis.NewSequence(pass1, pass2)
 	flow := &db.FlowEntry{}
 
 	err := seq.Run(flow)
@@ -48,7 +47,7 @@ func TestSequence_Run(t *testing.T) {
 func TestSequence_Run_Error(t *testing.T) {
 	pass1 := &mockPass{name: "pass1", shouldErr: true}
 	pass2 := &mockPass{name: "pass2"}
-	seq := NewSequence(pass1, pass2)
+	seq := analysis.NewSequence(pass1, pass2)
 	flow := &db.FlowEntry{}
 
 	err := seq.Run(flow)
@@ -58,25 +57,17 @@ func TestSequence_Run_Error(t *testing.T) {
 func TestSequence_String(t *testing.T) {
 	pass1 := &mockPass{name: "A"}
 	pass2 := &mockPass{name: "B"}
-	seq := NewSequence(pass1, pass2)
+	seq := analysis.NewSequence(pass1, pass2)
 	want := "Sequence(A, B)"
 	got := seq.String()
 	assert.Equal(t, want, got)
-}
-
-func TestSequence_AddPass(t *testing.T) {
-	seq := NewSequence()
-	pass := &mockPass{name: "added"}
-	seq.AddPass(pass)
-	got := seq.String()
-	assert.Equal(t, "Sequence(added)", got)
 }
 
 func TestParallel_Run(t *testing.T) {
 	called1, called2 := false, false
 	pass1 := &mockPass{name: "p1", called: &called1}
 	pass2 := &mockPass{name: "p2", called: &called2}
-	par := NewParallel(pass1, pass2)
+	par := analysis.NewParallel(pass1, pass2)
 	flow := &db.FlowEntry{}
 
 	err := par.Run(flow)
@@ -88,18 +79,18 @@ func TestParallel_Run(t *testing.T) {
 func TestParallel_Run_Error(t *testing.T) {
 	pass1 := &mockPass{name: "p1", shouldErr: true}
 	pass2 := &mockPass{name: "p2"}
-	par := NewParallel(pass1, pass2)
+	par := analysis.NewParallel(pass1, pass2)
 	flow := &db.FlowEntry{}
 
 	err := par.Run(flow)
 	assert.Error(t, err, "expected error")
 }
 
-func TestParallel_Name(t *testing.T) {
+func TestParallel_String(t *testing.T) {
 	pass1 := &mockPass{name: "X"}
 	pass2 := &mockPass{name: "Y"}
-	par := NewParallel(pass1, pass2)
+	par := analysis.NewParallel(pass1, pass2)
 	want := "Parallel(X, Y)"
-	got := par.Name()
+	got := par.String()
 	assert.Equal(t, want, got)
 }
