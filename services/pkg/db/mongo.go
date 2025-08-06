@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -424,52 +423,6 @@ func (db *mongoDb) InsertTag(tag string) error {
 	// TODO: handle this better?
 	_, _ = tagCollection.InsertOne(context.TODO(), bson.M{"_id": tag})
 	return nil
-}
-
-func (db mongoDb) GetFlagIds(flaglifetime int) ([]FlagId, error) {
-	// Create a context with a timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Access the "pcap" database and "flagids" collection
-	collection := db.client.Database("pcap").Collection("flagids")
-
-	// Find all documents in the
-	var filter bson.M
-	if flaglifetime < 0 {
-		filter = bson.M{}
-	} else {
-		filter = bson.M{"time": bson.M{"$gt": int(time.Now().Unix()) - flaglifetime}}
-	}
-
-	cur, err := collection.Find(ctx, filter)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find flagids: %v", err)
-	}
-	defer func() {
-		err := cur.Close(ctx)
-		if err != nil {
-			log.Printf("Failed to close cursor: %v", err)
-		}
-	}()
-
-	var flagids []FlagId
-
-	// Iterate through the cursor and extract _id values
-	for cur.Next(ctx) {
-		var flagid FlagId
-		if err := cur.Decode(&flagid); err != nil {
-			return nil, fmt.Errorf("failed to decode flagid: %v", err)
-		}
-		flagids = append(flagids, flagid)
-	}
-
-	if err := cur.Err(); err != nil {
-		return nil, fmt.Errorf("cursor error: %v", err)
-	}
-
-	return flagids, nil
-
 }
 
 func (db mongoDb) GetLastFlows(ctx context.Context, limit int) ([]FlowEntry, error) {

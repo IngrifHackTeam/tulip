@@ -86,11 +86,6 @@ type FlowID struct {
 	Time    time.Time
 }
 
-type FlagId struct {
-	ID   primitive.ObjectID `bson:"_id"`
-	Time int                `bson:"time"`
-}
-
 // FlagIdEntry rappresenta un flagid estratto dal DB
 // (replica la struct usata in assembler/flagid.go)
 type FlagIdEntry struct {
@@ -127,8 +122,6 @@ type Database interface {
 	GetPcap(uri string) (bool, PcapFile)
 	// Insert a new pcap file metadata into the database, updating if it already exists.
 	InsertPcap(file PcapFile) error
-	// Add a Suricata signature to the database, returning its MongoDB ID.
-	GetFlagIds(flaglifetime int) ([]FlagId, error)
 	// Set up the database with initial tags and indexes
 	ConfigureDatabase() error
 	// Associates a Suricata signature with a flow

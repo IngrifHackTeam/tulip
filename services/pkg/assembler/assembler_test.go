@@ -26,7 +26,6 @@ func (n *NoopDb) SetStar(string, bool) error                              { retu
 func (n *NoopDb) GetFlowDetail(string) (*db.FlowEntry, error)             { return nil, nil }
 func (n *NoopDb) GetPcap(string) (bool, db.PcapFile)                      { return false, db.PcapFile{} }
 func (n *NoopDb) InsertPcap(db.PcapFile) error                            { return nil }
-func (n *NoopDb) GetFlagIds(int) ([]db.FlagId, error)                     { return nil, nil }
 func (n *NoopDb) CountFlows(bson.D) (int64, error)                        { return 0, nil }
 func (n *NoopDb) AddSignatureToFlow(db.FlowID, db.SuricataSig, int) error { return nil }
 func (n *NoopDb) GetFingerprints(ctx context.Context) ([]int, error)      { return nil, nil }
