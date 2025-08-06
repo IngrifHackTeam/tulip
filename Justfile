@@ -5,8 +5,14 @@
 COMPOSE := "docker compose"
 
 build:
-    {{COMPOSE}} build
+    {{ COMPOSE }} build
 
 [confirm("Are you sure you want to replace the .env file? (y/n)")]
 env:
     cp .env.example .env
+
+_install_golangci:
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+lint: _install_golangci
+    cd services && golangci-lint run
