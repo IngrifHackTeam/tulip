@@ -11,8 +11,8 @@ build:
 env:
     cp .env.example .env
 
-_install_golangci:
-    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+_services_deps:
+    cd services && go get ./...
 
-lint: _install_golangci
-    cd services && golangci-lint run
+lint: _services_deps
+    cd services && go tool golangci-lint run --fix
