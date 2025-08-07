@@ -9,7 +9,7 @@ go 1.24.4
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/flier/gohs v1.2.3
-	github.com/google/gopacket v1.1.19
+	github.com/gopacket/gopacket v1.4.0
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/lmittmann/tint v1.1.2
